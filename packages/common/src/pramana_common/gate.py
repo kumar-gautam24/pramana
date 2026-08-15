@@ -11,7 +11,7 @@ deny -- see docs/decisions/0002-no-deny-path.md."""
 import math
 from dataclasses import dataclass
 
-from pramana_common.criteria import CriterionResult, Outcome, Verdict
+from pramana_common.criteria import CriterionResult, GateReason, Outcome, Verdict
 
 
 @dataclass(frozen=True)
@@ -34,7 +34,7 @@ class GateDecision:
     #: Criterion ids that prevented approval, in the order they were evaluated, so the
     #: reviewer sees them in the order the policy states them.
     blocking: tuple[str, ...]
-    reason: str | None
+    reason: GateReason | None
 
 
 def _blocks(result: CriterionResult, thresholds: GateThresholds) -> bool:
@@ -54,18 +54,20 @@ def evaluate_gate(
     if not results:
         # No criteria means decomposition failed to understand the policy. It never means
         # a policy with no requirements, so it must not fall through to approval.
-        return GateDecision(Outcome.ESCALATE, (), "no_criteria")
+        return GateDecision(Outcome.ESCALATE, (), GateReason.NO_CRITERIA)
 
-    blocking = tuple(r.criterion_id for r in results if _blocks(r, thresholds))
-    if not blocking:
+    # The reported ids and the reported reason are read off the same list, so a reader
+    # does not have to prove that two separate filters agree in order to trust them.
+    blocked = [r for r in results if _blocks(r, thresholds)]
+    if not blocked:
         return GateDecision(Outcome.APPROVE, (), None)
 
-    blocked = [r for r in results if _blocks(r, thresholds)]
+    blocking = tuple(r.criterion_id for r in blocked)
     if any(r.verdict is Verdict.NOT_MET for r in blocked):
-        reason = "criterion_not_met"
+        reason = GateReason.CRITERION_NOT_MET
     elif any(r.verdict is Verdict.INSUFFICIENT_EVIDENCE for r in blocked):
-        reason = "insufficient_evidence"
+        reason = GateReason.INSUFFICIENT_EVIDENCE
     else:
-        reason = "low_confidence"
+        reason = GateReason.LOW_CONFIDENCE
 
     return GateDecision(Outcome.ESCALATE, blocking, reason)

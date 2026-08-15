@@ -72,6 +72,21 @@ def test_definitive_failure_is_reported_before_missing_evidence():
     assert decision.reason == "criterion_not_met"
 
 
+def test_missing_evidence_is_reported_before_low_confidence():
+    """The rest of the precedence chain. A missing document is something the reviewer can
+    go and fetch; an unsure reading is only something to re-read. Report the fetchable one
+    first, and pin it so swapping the two branches fails."""
+    results = [
+        CriterionResult("C1", Verdict.INSUFFICIENT_EVIDENCE, 0.9),
+        met("C2", confidence=0.4),
+    ]
+
+    decision = evaluate_gate(results, THRESHOLDS)
+
+    assert decision.blocking == ("C1", "C2")
+    assert decision.reason == "insufficient_evidence"
+
+
 def test_all_blocking_criteria_are_reported_in_input_order():
     results = [
         CriterionResult("C1", Verdict.NOT_MET, 0.9),

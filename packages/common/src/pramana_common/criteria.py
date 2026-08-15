@@ -32,6 +32,21 @@ class Verdict(StrEnum):
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
 
 
+class GateReason(StrEnum):
+    """Why the gate declined to approve, as a closed set.
+
+    This value is rendered to the clinician who picks the case up, so a free-text field
+    would let a caller put "denied by policy" in front of a reviewer -- a denial in
+    everything but the outcome enum. Only these four sentences may be said, and each one
+    tells the reviewer what to do next: read the conflicting record, go find the missing
+    document, or re-read what the system was unsure about."""
+
+    NO_CRITERIA = "no_criteria"
+    CRITERION_NOT_MET = "criterion_not_met"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    LOW_CONFIDENCE = "low_confidence"
+
+
 class Outcome(StrEnum):
     """Exactly two members, permanently.
 

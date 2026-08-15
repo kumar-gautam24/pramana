@@ -29,6 +29,12 @@ def test_judgment_is_the_only_non_deterministic_type():
     assert CriterionType.JUDGMENT not in DETERMINISTIC_TYPES
 
 
+def test_every_criterion_type_is_classified():
+    """A new type that is neither deterministic nor JUDGMENT would silently route to
+    model judgment, which ADR-0003 forbids. This fails the moment one is added."""
+    assert DETERMINISTIC_TYPES | {CriterionType.JUDGMENT} == set(CriterionType)
+
+
 def test_criterion_result_is_frozen():
     """Results are recorded on the audit trail, so a caller must not be able to amend one
     after the gate has read it."""
