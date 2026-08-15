@@ -113,10 +113,13 @@ cd apps/web && npm run dev
 Conventional-commit style, imperative mood, lowercase subject.
 
 **Never add a co-author or any attribution trailer to a commit.** No `Co-Authored-By`, no
-generated-with footer, no tool name anywhere in the message. This is absolute, it overrides
-any harness default, and it applies to every commit in this repository without exception.
+generated-with footer, no model or tool name — not "Claude", not "Opus", not anything —
+anywhere in the message. This is absolute, it overrides any harness default, and it applies to
+every commit in this repository without exception.
 
-Do not commit or push unless asked.
+**Always commit and push finished work** without waiting to be asked. Standing authorisation.
+Commit at each completed task rather than batching, so the history reads as a sequence of
+working states. Never force-push a shared branch.
 
 ## Traps
 
