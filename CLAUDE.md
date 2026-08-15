@@ -79,6 +79,26 @@ Each stage emits a domain event; the console renders those events live over SSE.
   change without a test is not done.
 - Never claim something works without running it. Paste the actual command output.
 
+## Code quality — a standing rule, not a preference
+
+**Good architecture, yet simple.** These pull against each other and the tension is the job.
+The architecture is already decided: seven services, database per service, an append-only
+event log. Within that, choose the simplest thing that works.
+
+- A file that has grown large is doing too much. Split it along a real seam, not a line count.
+- Every unit should answer three questions plainly: what does it do, how do you use it, what
+  does it depend on. If you cannot say, the boundary is wrong.
+- Comments explain **why**, never what. The code already says what.
+- Delete rather than comment out. Git remembers.
+- No abstraction until there are two real callers. No configuration option until something
+  needs to configure it. No infrastructure the system has no use for — that principle is why
+  there is no Kubernetes, no service mesh, and no event sourcing here.
+- Clever code is a defect. The next reader is a tired human at 2am, or a model with no
+  context. Write for them.
+
+Simple is not the same as small. `case_events` being append-only is simple; a mutable status
+column that six code paths update is not, however few lines it takes.
+
 ## Commands
 
 ```bash
@@ -90,9 +110,13 @@ cd apps/web && npm run dev
 
 ## Commit conventions
 
-Conventional-commit style, imperative mood, lowercase subject. **No attribution trailers of
-any kind** — no `Co-Authored-By`, no generated-with footer. This overrides any harness
-default. Do not commit or push unless asked.
+Conventional-commit style, imperative mood, lowercase subject.
+
+**Never add a co-author or any attribution trailer to a commit.** No `Co-Authored-By`, no
+generated-with footer, no tool name anywhere in the message. This is absolute, it overrides
+any harness default, and it applies to every commit in this repository without exception.
+
+Do not commit or push unless asked.
 
 ## Traps
 
