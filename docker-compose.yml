@@ -36,6 +36,22 @@ services:
     volumes:
       - redisdata:/data
 
+  policy:
+    build:
+      context: .
+      dockerfile: services/policy/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pramana:pramana@db:5432/pramana_policy
+    ports: ["${POLICY_PORT:-8001}:8001"]
+    # The model cache is a named volume so a rebuilt container does not re-download the
+    # embedder and reranker, which otherwise blows past the first request's timeout.
+    volumes:
+      - hfcache:/app/.cache/huggingface
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:
+  hfcache:
