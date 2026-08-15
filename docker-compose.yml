@@ -14,6 +14,10 @@ services:
       interval: 5s
       retries: 10
     volumes:
+      # The entrypoint runs create-databases.sql only when it initialises an empty data
+      # directory, so against a pgdata volume from an earlier run it is skipped in
+      # silence -- editing the SQL and restarting looks like it worked and changes
+      # nothing. `docker compose down -v` drops the volume so the script runs again.
       - pgdata:/var/lib/postgresql/data
       - ./scripts/create-databases.sql:/docker-entrypoint-initdb.d/10-databases.sql:ro
 
