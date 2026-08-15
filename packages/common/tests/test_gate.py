@@ -121,3 +121,35 @@ def test_non_finite_threshold_is_rejected(bad):
 def test_threshold_outside_zero_to_one_is_rejected(bad):
     with pytest.raises(ValueError, match="min_confidence"):
         GateThresholds(min_confidence=bad)
+
+
+def test_confidence_exactly_at_threshold_approves():
+    """The threshold is the minimum acceptable confidence, so meeting it exactly is
+    meeting it. A confidence of 0.7 against min_confidence=0.7 should approve."""
+    decision = evaluate_gate([met("C1", confidence=0.7)], THRESHOLDS)
+
+    assert decision.outcome is Outcome.APPROVE
+    assert decision.blocking == ()
+    assert decision.reason is None
+
+
+def test_confidence_just_below_threshold_escalates():
+    """A confidence of 0.6999 against min_confidence=0.7 falls below the boundary
+    and must escalate."""
+    decision = evaluate_gate([met("C1", confidence=0.6999)], THRESHOLDS)
+
+    assert decision.outcome is Outcome.ESCALATE
+    assert decision.blocking == ("C1",)
+    assert decision.reason == "low_confidence"
+
+
+def test_default_thresholds_disable_confidence_check():
+    """The default min_confidence=0.0 disables the confidence check by design. Any
+    MET criterion with any valid confidence (including 0.0) will approve under
+    default thresholds. This is fail-open behavior for decomposition failures."""
+    default_thresholds = GateThresholds()
+    decision = evaluate_gate([CriterionResult("C1", Verdict.MET, 0.0)], default_thresholds)
+
+    assert decision.outcome is Outcome.APPROVE
+    assert decision.blocking == ()
+    assert decision.reason is None
