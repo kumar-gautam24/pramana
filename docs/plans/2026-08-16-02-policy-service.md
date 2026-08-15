@@ -1418,7 +1418,66 @@ async def ingest_ncd(
 
 - [ ] **Step 5: Add the route**
 
-In `main.py`, add a lifespan that constructs one `Embedder` and stores it on `app.state`, and a `POST /ingest` accepting `{"ncd_id": "226"}` that opens an `httpx.AsyncClient` against `get_settings().cms_base_url`, calls `fetch_ncd`, passes the records to `ingest_ncd`, commits, and returns the `IngestResult` fields as JSON.
+Replace `services/policy/src/policy/main.py` with:
+
+```python
+from contextlib import asynccontextmanager
+
+import httpx
+from fastapi import FastAPI
+from pydantic import BaseModel
+
+from policy.cms import fetch_ncd
+from policy.config import get_settings
+from policy.db import SessionFactory
+from policy.embedding import Embedder
+from policy.ingest import ingest_ncd
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Loading the model costs seconds. Paying it at startup keeps it off the first
+    # caller's timeout, which is where it would otherwise land.
+    app.state.embedder = Embedder()
+    yield
+
+
+app = FastAPI(title="pramana policy", lifespan=lifespan)
+
+
+class IngestRequest(BaseModel):
+    ncd_id: str
+
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+async def ready() -> dict[str, str]:
+    return {"status": "ready"}
+
+
+@app.post("/ingest")
+async def ingest(request: IngestRequest) -> dict[str, int]:
+    async with httpx.AsyncClient(
+        base_url=get_settings().cms_base_url, timeout=30
+    ) as client:
+        records = await fetch_ncd(client, request.ncd_id)
+
+    async with SessionFactory() as session:
+        result = await ingest_ncd(session, app.state.embedder, records)
+        await session.commit()
+
+    return {
+        "policies_added": result.policies_added,
+        "chunks_added": result.chunks_added,
+        "skipped": result.skipped,
+    }
+```
+
+Note `test_health.py` from Task 1 still passes — `TestClient(app)` as a context manager runs the lifespan, so the embedder loads once during that test.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -1561,16 +1620,154 @@ def reciprocal_rank_fusion(
 Run: `cd services/policy && uv run pytest tests/test_retrieval.py -v`
 Expected: PASS, 6 tests.
 
-- [ ] **Step 5: Add dense, lexical, and the search function**
+- [ ] **Step 5: Add `Hit` to the shared package**
 
-In `retrieval.py`, add:
-- `async def _dense(session, vector, candidates) -> list[int]` — ordered by `Chunk.embedding.cosine_distance(vector)`, limited to `candidates`.
-- `async def _lexical(session, query, candidates) -> list[int]` — ordered by `ts_rank(chunks.tsv, plainto_tsquery('english', query))` descending, limited to `candidates`.
-- `async def search(...)` — embed the query, run both, fuse to the top 20, load those chunks with their policies, drop any whose policy is not `in_force_on` the given date (skip this filter when `on` is `None`), rerank the survivors with the cross-encoder, return the top `limit` as `Hit` objects carrying the **cross-encoder** score.
+`Hit` crosses a service boundary — the adjudication service will consume `/search` in plan 04 — so it belongs in the coupling point, not in this service. Append to `packages/common/src/pramana_common/schemas.py`:
+
+```python
+class Hit(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    chunk_id: int
+    policy_id: int
+    #: The number a human cites, e.g. "240.4".
+    display_id: str
+    heading_path: str
+    text: str
+    #: The cross-encoder's score, not the fused score. RRF scores carry no relevance
+    #: information, so this is the only value downstream stages can threshold on.
+    score: float
+```
+
+- [ ] **Step 6: Add the reranker**
+
+Append to `services/policy/src/policy/embedding.py`:
+
+```python
+class Reranker:
+    """The cross-encoder.
+
+    It is here to produce a score a threshold can be compared against, not to improve
+    ranking -- it measurably costs ranking accuracy. See docs/decisions/0007. Removing it
+    would improve the retrieval table and destroy the ability to refuse."""
+
+    def __init__(self, model_name: str | None = None) -> None:
+        from fastembed.rerank.cross_encoder import TextCrossEncoder
+
+        self._model = TextCrossEncoder(model_name or get_settings().rerank_model)
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        return [float(s) for s in self._model.rerank(query, documents)]
+```
+
+- [ ] **Step 7: Add dense, lexical and the search function**
+
+Append to `services/policy/src/policy/retrieval.py`:
+
+```python
+from collections import defaultdict
+from datetime import date
+
+from pramana_common.schemas import Hit
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from policy.dating import in_force_on
+from policy.models import Chunk, Policy
+
+#: How many chunks survive fusion into reranking. Wider costs latency; narrower drops
+#: documents the cross-encoder would have promoted.
+CANDIDATES = 20
+
+
+async def _dense(session: AsyncSession, vector: list[float], limit: int) -> list[int]:
+    rows = await session.execute(
+        select(Chunk.id).order_by(Chunk.embedding.cosine_distance(vector)).limit(limit)
+    )
+    return list(rows.scalars())
+
+
+async def _lexical(session: AsyncSession, query: str, limit: int) -> list[int]:
+    """Catches exact tokens like "AHI" and "Type IV" that embeddings blur."""
+    tsquery = func.plainto_tsquery("english", query)
+    rows = await session.execute(
+        select(Chunk.id)
+        .where(Chunk.tsv.op("@@")(tsquery))
+        .order_by(func.ts_rank(Chunk.tsv, tsquery).desc())
+        .limit(limit)
+    )
+    return list(rows.scalars())
+
+
+async def search(
+    session: AsyncSession,
+    embedder,
+    reranker,
+    query: str,
+    on: date | None = None,
+    limit: int = 5,
+) -> list[Hit]:
+    vector = embedder.encode([query])[0]
+    fused = reciprocal_rank_fusion(
+        [
+            await _dense(session, vector, CANDIDATES),
+            await _lexical(session, query, CANDIDATES),
+        ]
+    )
+    ids = [chunk_id for chunk_id, _ in fused[:CANDIDATES]]
+    if not ids:
+        return []
+
+    rows = (
+        await session.execute(
+            select(Chunk, Policy)
+            .join(Policy, Chunk.policy_id == Policy.id)
+            .where(Chunk.id.in_(ids))
+        )
+    ).all()
+
+    if on is not None:
+        # Keep only chunks belonging to the version that governed the date of service. A
+        # case judged by a policy that was not yet in force is wrong in the direction that
+        # harms the member.
+        versions: dict[str, dict[int, Policy]] = defaultdict(dict)
+        for _, policy in rows:
+            versions[policy.display_id][policy.id] = policy
+        governing = {
+            display: in_force_on(list(found.values()), on)
+            for display, found in versions.items()
+        }
+        rows = [
+            (chunk, policy)
+            for chunk, policy in rows
+            if (winner := governing.get(policy.display_id)) is not None
+            and winner.id == policy.id
+        ]
+
+    if not rows:
+        return []
+
+    scores = reranker.score(query, [chunk.text for chunk, _ in rows])
+    ranked = sorted(zip(rows, scores, strict=True), key=lambda pair: -pair[1])[:limit]
+
+    return [
+        Hit(
+            chunk_id=chunk.id,
+            policy_id=policy.id,
+            display_id=policy.display_id,
+            heading_path=chunk.heading_path,
+            text=chunk.text,
+            score=score,
+        )
+        for (chunk, policy), score in ranked
+    ]
+```
+
+Then add to `main.py`: construct one `Reranker` in the lifespan alongside the `Embedder`, and a `POST /search` taking `{"query": str, "date_of_service": date | None, "limit": int = 5}` that opens a session, calls `search`, and returns the hits.
 
 The score returned is the reranker's, not the fused score — downstream stages threshold on it.
 
-- [ ] **Step 6: Add `POST /search` and verify against the real corpus**
+- [ ] **Step 8: Add `POST /search` and verify against the real corpus**
 
 ```bash
 DB_PORT=5433 REDIS_PORT=6380 docker compose up -d --build policy
@@ -1590,7 +1787,7 @@ curl -s -X POST localhost:8001/search -H 'Content-Type: application/json' \
 
 Expected: **no hits** — NCD 240.4 was not in force in 2001. If this returns hits, the effective-date filter is not wired in, and every downstream stage would be adjudicating against policy that did not yet exist.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
 git add services/policy
@@ -1607,7 +1804,9 @@ escalation gate has to threshold on something."
 
 **Spec coverage.** This plan implements the design's §3 `policy` service row, §3 effective-dated versioning, §8 corpus sourcing, and the retrieval half of §4 step 3. It does **not** cover: member records (plan 03), criteria extraction and the pipeline (plan 04), auth and gateway (plan 05), evals (plan 06), console (plan 07).
 
-**Placeholder scan.** No `TBD`/`TODO`. Tasks 7 step 5 and 8 step 5 describe wiring in prose rather than literal code — both are mechanical assembly over interfaces fully specified above them, and both are followed by a verification step with an exact command and expected output. Every critical-path module (parsing, chunking, dating, RRF) carries complete code.
+**Placeholder scan.** No `TBD`/`TODO`. Every code step carries literal code. The only prose-specified work is the final `POST /search` handler (Task 8 step 8), a short call into the fully-specified `search()` above it, immediately followed by two verification commands with exact expected output — including a negative case that fails loudly if the effective-date filter was never wired in.
+
+**Note on `Hit`.** It is added to `packages/common` rather than to this service, because the adjudication service consumes `/search` in plan 04 and `packages/common` is the single coupling point. That is the one place plan 02 touches the shared package.
 
 **Type consistency.** `Section(heading_path, text)` is defined in Task 4 and consumed with those names in Task 5. `ChunkRecord(ordinal, heading_path, text)` from Task 5 is consumed in Task 7. `NcdRecord.sections_html` (Task 3) is keyed by payload field name, and Task 7's `SECTION_HEADINGS` maps exactly those keys. `Policy.effective_from`/`effective_to` (Task 2) satisfy the `Versioned` protocol (Task 6). `Embedder.encode` (Task 7) matches `StubEmbedder.encode` in its own tests.
 
