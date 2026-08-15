@@ -31,3 +31,6 @@ data/synthea/
 
 # OS
 .DS_Store
+
+# SDD scratch for subagent-driven development runs
+.superpowers/
