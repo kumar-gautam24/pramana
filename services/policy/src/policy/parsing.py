@@ -34,6 +34,26 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "").replace("\xa0", " ")).strip()
 
 
+def _is_heading_position(strong) -> bool:
+    """A <strong> is promoted to a heading only when it is the sole or leading content of
+    its parent block. Without this, "<strong>A. patient with OSA...</strong>" used as
+    inline emphasis inside a sentence would be misread as a section break, splitting a
+    single paragraph into a bogus heading plus an orphaned tail."""
+    parent = strong.getparent()
+    if parent is None:
+        return False
+
+    own_text = _clean("".join(strong.itertext()))
+    parent_text = _clean("".join(parent.itertext()))
+    if own_text == parent_text:
+        return True  # the strong is the whole of its block, nothing else to misclassify
+
+    # Otherwise it only counts as a heading if nothing precedes it in the block -- a
+    # heading followed by trailing prose (its tail) is still a heading; prose followed by
+    # a bolded aside is not.
+    return not (parent.text or "").strip() and len(parent) > 0 and parent[0] is strong
+
+
 def html_to_sections(raw_html: str, root_heading: str) -> list[Section]:
     markup = unescape_twice(raw_html).strip()
     if not markup:
@@ -53,17 +73,27 @@ def html_to_sections(raw_html: str, root_heading: str) -> list[Section]:
             sections.append(Section(heading_path=heading, text=body))
         buffer.clear()
 
-    for element in root.iter():
+    def walk(element) -> None:
+        nonlocal heading
         if element.tag == "strong":
             candidate = _clean("".join(element.itertext()))
-            if _HEADING.match(candidate):
+            if _HEADING.match(candidate) and _is_heading_position(element):
                 flush()
                 heading = f"{root_heading} > {candidate}"
-                continue
-        if element.text and element.tag not in ("script", "style"):
+                # The heading's own descendants must not be re-emitted as body text, so
+                # the subtree is skipped entirely -- but the tail (text right after the
+                # closing </strong>) belongs to the *new* section, not the one just
+                # flushed, and must still be captured rather than silently dropped.
+                if element.tail:
+                    buffer.append(element.tail)
+                return
+        if element.tag not in ("script", "style") and element.text:
             buffer.append(element.text)
+        for child in element:
+            walk(child)
         if element.tail:
             buffer.append(element.tail)
 
+    walk(root)
     flush()
     return sections
