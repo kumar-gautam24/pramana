@@ -1,0 +1,33 @@
+# Working memory for AI sessions. Deliberately untracked: this repo is public, and the
+# build journal is operational scratch rather than something a reader benefits from.
+# Design reasoning that IS worth reading lives in docs/decisions/ and is committed.
+.workspace/
+
+# Secrets
+.env
+.env.local
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+.next/
+next-env.d.ts
+
+# Corpus and generated data. Both are reproducible from scripts, and the CMS download
+# carries an AMA licence that forbids redistributing CPT descriptions -- see ADR-0004.
+corpus/
+data/synthea/
+
+# Local model cache
+.cache/
+
+# OS
+.DS_Store
