@@ -1,0 +1,37 @@
+# Host ports are overridable so a port already taken does not block the stack:
+# DB_PORT=5433 docker compose up. Service-to-service URLs use container names, so they
+# are unaffected.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: pramana
+      POSTGRES_PASSWORD: pramana
+      POSTGRES_DB: pramana
+    ports: ["${DB_PORT:-5432}:5432"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pramana"]
+      interval: 5s
+      retries: 10
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./scripts/create-databases.sql:/docker-entrypoint-initdb.d/10-databases.sql:ro
+
+  # Password-protected because Redis will hold sessions: anything that can write a
+  # session key mints a clinician session, and a clinician is the only role permitted to
+  # decide a case. It is published on a host port, so "it is only localhost" is not the
+  # whole story.
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-dev-redis-password}"]
+    ports: ["${REDIS_PORT:-6379}:6379"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-dev-redis-password}", "ping"]
+      interval: 5s
+      retries: 10
+    volumes:
+      - redisdata:/data
+
+volumes:
+  pgdata:
+  redisdata:
