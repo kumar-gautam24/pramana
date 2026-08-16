@@ -17,7 +17,7 @@ def rows(name: str) -> list[dict]:
 def test_parses_patients():
     patients = parse_patients(rows("patients.csv"))
 
-    assert len(patients) == 3
+    assert len(patients) == 5
     assert all(isinstance(p.birth_date, date) for p in patients)
 
 
