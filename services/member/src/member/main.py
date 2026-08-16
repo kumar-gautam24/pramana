@@ -173,9 +173,13 @@ async def conditions(
 
 
 @app.get("/members/{member_id}/adherence")
-async def member_adherence(member_id: str, start: date, end: date) -> AdherenceOut:
+async def member_adherence(
+    member_id: str, start: date, end: date, min_hours: float
+) -> AdherenceOut:
+    """`min_hours` is a required query parameter, like `codes` on /conditions: the
+    nightly-hours bar is the caller's policy, not this service's (see queries.adherence)."""
     async with SessionFactory() as session:
-        result = await adherence(session, member_id, start, end)
+        result = await adherence(session, member_id, start, end, min_hours)
     return AdherenceOut.model_validate(result)
 
 
@@ -190,7 +194,7 @@ async def notes(member_id: str, before: date) -> list[NoteOut]:
 async def seed(body: SeedIn) -> SeedOut:
     """Seeds the committed fixture population, idempotent by member id (see
     member.seed). The request only carries `seed` -- which member gets which case
-    shape is FIXTURE_PLAN, not caller input, since the fixture's three patient ids are
+    shape is FIXTURE_PLAN, not caller input, since the fixture's own patient ids are
     the only ones this data could ever apply to."""
     patients = parse_patients(_read_fixture_csv("patients.csv"))
     conditions = parse_conditions(_read_fixture_csv("conditions.csv"))

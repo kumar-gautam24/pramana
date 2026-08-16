@@ -21,6 +21,7 @@ class Adherence:
     #: Nights with any usage row in the window, qualifying or not -- the denominator a
     #: caller needs to see the 0/0 case for what it is rather than infer it from fraction.
     nights: int
+    #: Counted against the caller's `min_hours`, not a threshold this service holds.
     qualifying_nights: int
     fraction: float
 
@@ -74,14 +75,20 @@ async def conditions_before(
 
 
 async def adherence(
-    session: AsyncSession, member_id: str, start: date, end: date
+    session: AsyncSession, member_id: str, start: date, end: date, min_hours: float
 ) -> Adherence:
     """Nights of CPAP usage within `[start, end]`, both bounds inclusive, and how many
-    of them meet NCD 240.4's "greater than or equal to 4 hours per night" bar.
+    of them logged at least `min_hours`.
 
-    The caller supplies the window (adjudication computes the consecutive 30-day span
-    from the date of service); this only counts what falls inside the bounds it's given,
-    so usage outside the window can't inflate a member into meeting the 70% threshold.
+    `min_hours` is required rather than defaulted for the same reason `codes` is on
+    `conditions_before`: four hours a night is NCD 240.4's number, and a threshold
+    written here would be this service deciding what the policy says. A default would
+    read as the answer and be used as one -- so the caller that owns the policy states
+    it (ADR-0003).
+
+    The caller supplies the window too (adjudication computes the consecutive 30-day
+    span from the date of service); this only counts what falls inside the bounds it's
+    given, so usage outside the window can't inflate a member's qualifying-night count.
     """
     result = await session.execute(
         select(CpapUsage).where(
@@ -92,7 +99,7 @@ async def adherence(
     )
     usages = list(result.scalars().all())
     nights = len(usages)
-    qualifying_nights = sum(1 for usage in usages if usage.hours >= 4.0)
+    qualifying_nights = sum(1 for usage in usages if usage.hours >= min_hours)
     # A member who never used the device must fail the criterion cleanly -- 0/0 is a
     # fact about the record, not a program error, so this returns 0.0 rather than
     # raising ZeroDivisionError and turning a refusal into a 500.
