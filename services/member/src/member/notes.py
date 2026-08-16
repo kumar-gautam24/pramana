@@ -67,18 +67,60 @@ _PHRASINGS: dict[str, tuple[str, ...]] = {
 #: length alone, which is its own kind of leak.
 _OPENER = "Follow-up visit for evaluation of sleep complaints."
 
-#: Kept generic on purpose: this sentence exists to vary a note around a benefit
-#: discussion, not to assert anything a criterion could key on.
-_BENEFIT_PHRASINGS = (
-    "Discussed options related to {benefit} and answered questions about next steps.",
-    "Reviewed {benefit} with the patient and confirmed understanding of the plan.",
+#: NCD 240.4's continuation criterion asks whether the record shows the patient is
+#: "using and benefiting from" therapy -- narrative evidence the treatment is
+#: working, judged the same way the initial symptoms are: by reading prose, not by
+#: matching a label. So these are shaped exactly like SYMPTOMS/_PHRASINGS above,
+#: not like a fill-in-the-blank topic string -- a template can't produce narrative
+#: evidence, only a description can.
+BENEFIT_INDICATORS = (
+    "improved daytime alertness",
+    "reduced witnessed apnoeas",
+    "partner reporting less snoring",
+    "better concentration",
 )
+
+#: Same rule as _PHRASINGS: describe the improvement, never name the indicator, and
+#: never use the continuation criterion's own words ("benefiting", "adherent").
+_BENEFIT_PHRASINGS: dict[str, tuple[str, ...]] = {
+    "improved daytime alertness": (
+        "Reports feeling noticeably more awake through the day and no longer "
+        "needing to pull over on long drives.",
+        "Says mornings feel less foggy and hasn't dozed off during afternoon "
+        "meetings in weeks.",
+        "Notes staying awake through the evening now, where before he'd drift off "
+        "on the couch.",
+    ),
+    "reduced witnessed apnoeas": (
+        "Partner no longer hears him stop breathing during the night since "
+        "starting therapy.",
+        "Bed partner reports the nighttime gasping and breathing pauses have "
+        "stopped.",
+        "No further reports of breathing pauses observed overnight.",
+    ),
+    "partner reporting less snoring": (
+        "Partner says the nightly noise has quieted considerably since starting "
+        "treatment.",
+        "Spouse reports much quieter nights, no longer waking to loud breathing "
+        "sounds.",
+        "Partner notes the bedroom is far quieter at night than before treatment "
+        "began.",
+    ),
+    "better concentration": (
+        "Reports finding it easier to focus through the workday and finishing "
+        "tasks without losing his place.",
+        "Says thoughts feel clearer and follows conversations more easily than "
+        "before starting therapy.",
+        "Notes completing paperwork in one sitting now, without needing to reread "
+        "earlier sections.",
+    ),
+}
 
 
 def _rng(member_id: str, seed: int, note_date: date, concern: str) -> random.Random:
-    # Same rationale as generate.py's _rng: one stream per concern (per symptom, plus
-    # one for the benefit sentence) so a change to one symptom's phrasing bank can
-    # never shift which phrasing another symptom draws.
+    # Same rationale as generate.py's _rng: one stream per concern (per symptom or
+    # benefit indicator) so a change to one's phrasing bank can never shift which
+    # phrasing another draws.
     return random.Random(f"{member_id}:{seed}:{note_date.isoformat()}:{concern}")
 
 
@@ -87,20 +129,28 @@ def generate_note(
     seed: int,
     note_date: date,
     symptoms: list[str],
-    benefit: str | None = None,
+    benefits: list[str] | None = None,
 ) -> str:
-    unknown = [s for s in symptoms if s not in _PHRASINGS]
-    if unknown:
+    unknown_symptoms = [s for s in symptoms if s not in _PHRASINGS]
+    if unknown_symptoms:
         # Silently documenting nothing for a misspelled symptom would produce a
         # golden case that doesn't test what its name claims -- fail loudly instead.
-        raise ValueError(f"unknown symptom(s): {unknown!r}")
+        raise ValueError(f"unknown symptom(s): {unknown_symptoms!r}")
+
+    benefits = benefits or []
+    unknown_benefits = [b for b in benefits if b not in _BENEFIT_PHRASINGS]
+    if unknown_benefits:
+        raise ValueError(f"unknown benefit indicator(s): {unknown_benefits!r}")
 
     sentences = [_OPENER]
     for symptom in symptoms:
         sentences.append(_rng(member_id, seed, note_date, symptom).choice(_PHRASINGS[symptom]))
-
-    if benefit is not None:
-        rng = _rng(member_id, seed, note_date, f"benefit:{benefit}")
-        sentences.append(rng.choice(_BENEFIT_PHRASINGS).format(benefit=benefit))
+    # benefits=None (or []) documents no benefit at all -- the continuation
+    # criterion needs a note that shows no evidence of improvement, same as an
+    # empty symptoms list needs one that shows no evidence of a symptom.
+    for indicator in benefits:
+        sentences.append(
+            _rng(member_id, seed, note_date, indicator).choice(_BENEFIT_PHRASINGS[indicator])
+        )
 
     return " ".join(sentences)
