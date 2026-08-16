@@ -8,7 +8,7 @@ import uuid
 import asyncpg
 import pytest
 
-from policy.db import pool, probe
+from policy.db import migration_pool, pool, probe, run_migrations
 
 ADMIN_DSN = "postgresql://pramana:pramana@localhost:5432/postgres"
 
@@ -37,8 +37,12 @@ async def scratch_db():
 
 
 async def test_probe_succeeds_against_a_reachable_database(scratch_db):
-    # pool()'s init callback registers the vector codec on every connection it opens,
-    # so even a probe-only test needs the extension present, same as a real database.
+    # pool() always needs the vector extension present (its init callback registers
+    # the codec on every connection), so this creates it directly rather than through
+    # run_migrations() -- this test is only about probe(), and
+    # test_bootstraps_a_clean_database_through_migration_pool_then_pool below is what
+    # actually proves pool() and migration_pool() compose correctly on a database that
+    # starts without the extension.
     admin = await asyncpg.connect(_scratch_dsn(scratch_db))
     try:
         await admin.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -82,3 +86,40 @@ async def test_pool_registers_the_vector_codec(scratch_db):
         assert row["v"].to_list() == [0.5, 1.0, 1.5]
     finally:
         await p.close()
+
+
+async def test_bootstraps_a_clean_database_through_migration_pool_then_pool(
+    scratch_db, tmp_path
+):
+    """The regression the fix-round review caught: opening any connection through
+    pool() on a database where the vector extension does not exist raises inside
+    register_vector's init callback -- and every real database is in exactly that
+    state before its first migration runs. This composes the real startup order end
+    to end, with no admin connection creating anything out of band: migration_pool()
+    opens connections with no codec, run_migrations() applies the file that creates
+    the extension, and only then does pool() open its first connection."""
+    (tmp_path / "0001_vector.sql").write_text(
+        "CREATE EXTENSION IF NOT EXISTS vector;"
+        " CREATE TABLE embeddings (id integer PRIMARY KEY, v vector(3));"
+    )
+
+    mpool = await migration_pool(dsn=_scratch_dsn(scratch_db))
+    try:
+        applied = await run_migrations(mpool, tmp_path)
+    finally:
+        await mpool.close()
+    assert applied == ["0001_vector.sql"]
+
+    apool = await pool(dsn=_scratch_dsn(scratch_db))
+    try:
+        await probe(apool)
+        async with apool.acquire() as conn:
+            # Values exactly representable in float32 (vector's storage type), so the
+            # round-trip assertion below cannot fail on precision alone.
+            await conn.execute(
+                "INSERT INTO embeddings (id, v) VALUES ($1, $2)", 1, [0.5, 1.0, 1.5]
+            )
+            row = await conn.fetchrow("SELECT v FROM embeddings WHERE id = 1")
+        assert row["v"].to_list() == [0.5, 1.0, 1.5]
+    finally:
+        await apool.close()

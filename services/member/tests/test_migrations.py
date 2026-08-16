@@ -3,6 +3,7 @@ files in order, never twice, and refuse to run rather than let recorded history 
 disk silently disagree. Every test here runs against a scratch database created and
 dropped by the test itself -- never against pramana_member or its _test sibling."""
 
+import asyncio
 import uuid
 
 import asyncpg
@@ -133,3 +134,88 @@ async def test_creates_schema_migrations_table_if_absent(scratch_pool, tmp_path)
     assert not await _table_exists(scratch_pool, "schema_migrations")
     await run_migrations(scratch_pool, tmp_path)
     assert await _table_exists(scratch_pool, "schema_migrations")
+
+
+async def test_checksum_mismatch_is_caught_before_applying_new_files(scratch_pool, tmp_path):
+    """Fix-round regression: the checksum check used to sit inside the per-file apply
+    loop, so a corrupted file that sorted *after* a brand-new, not-yet-applied one let
+    the new one apply before the mismatch was ever noticed. 0003 here is the corrupted
+    file; 0002 is the new one that must never be touched once 0003 fails to verify."""
+    _write(tmp_path, "0001_create_foo.sql", "CREATE TABLE foo (id integer PRIMARY KEY);")
+    _write(tmp_path, "0003_create_baz.sql", "CREATE TABLE baz (id integer PRIMARY KEY);")
+    await run_migrations(scratch_pool, tmp_path)
+
+    _write(
+        tmp_path,
+        "0003_create_baz.sql",
+        "CREATE TABLE baz (id integer PRIMARY KEY, extra text);",
+    )
+    _write(tmp_path, "0002_create_bar.sql", "CREATE TABLE bar (id integer PRIMARY KEY);")
+
+    with pytest.raises(MigrationError):
+        await run_migrations(scratch_pool, tmp_path)
+
+    assert not await _table_exists(scratch_pool, "bar")
+    assert await _applied_versions(scratch_pool) == [
+        "0001_create_foo.sql",
+        "0003_create_baz.sql",
+    ]
+
+
+async def test_ddl_rolls_back_when_recording_the_version_fails(scratch_pool, tmp_path):
+    """Mutation-tested boundary: the file's SQL and the schema_migrations insert are two
+    separate execute() calls, joined only by the explicit connection.transaction().
+    Postgres's own implicit transaction around a multi-statement simple query does not
+    reach across that boundary, so this is the one thing the explicit transaction is
+    actually responsible for. The CHECK constraint makes the insert fail regardless of
+    file content -- a real sha256 hex digest is always 64 characters -- so this does not
+    depend on racing anything."""
+    async with scratch_pool.acquire() as conn:
+        await conn.execute(
+            """
+            CREATE TABLE schema_migrations (
+                version text PRIMARY KEY,
+                applied_at timestamptz NOT NULL DEFAULT now(),
+                checksum text NOT NULL CHECK (length(checksum) <= 8)
+            )
+            """
+        )
+    _write(tmp_path, "0001_create_ddl_survivor.sql", "CREATE TABLE ddl_survivor (id integer);")
+
+    with pytest.raises(asyncpg.PostgresError):
+        await run_migrations(scratch_pool, tmp_path)
+
+    assert not await _table_exists(scratch_pool, "ddl_survivor")
+    assert await _applied_versions(scratch_pool) == []
+
+
+async def test_two_concurrent_runners_do_not_double_apply(scratch_db, tmp_path):
+    """Two replicas starting together must serialize on the advisory lock rather than
+    race: whichever acquires it first applies everything, and the other -- unblocked
+    only after the first commits and releases -- finds nothing left to do. Neither may
+    raise, and nothing may be applied twice."""
+    _write(tmp_path, "0001_create_foo.sql", "CREATE TABLE foo (id integer PRIMARY KEY);")
+    _write(tmp_path, "0002_create_bar.sql", "CREATE TABLE bar (id integer PRIMARY KEY);")
+
+    pool_a = await asyncpg.create_pool(_scratch_dsn(scratch_db))
+    pool_b = await asyncpg.create_pool(_scratch_dsn(scratch_db))
+    try:
+        first, second = await asyncio.gather(
+            run_migrations(pool_a, tmp_path),
+            run_migrations(pool_b, tmp_path),
+        )
+    finally:
+        await pool_a.close()
+        await pool_b.close()
+
+    assert sorted(first + second) == ["0001_create_foo.sql", "0002_create_bar.sql"]
+    assert {len(first), len(second)} == {0, 2}
+
+    verify_pool = await asyncpg.create_pool(_scratch_dsn(scratch_db))
+    try:
+        assert await _applied_versions(verify_pool) == [
+            "0001_create_foo.sql",
+            "0002_create_bar.sql",
+        ]
+    finally:
+        await verify_pool.close()

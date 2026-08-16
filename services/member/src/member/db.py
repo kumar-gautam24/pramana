@@ -66,6 +66,13 @@ async def probe(pool: asyncpg.Pool) -> None:
         await connection.execute("SELECT 1")
 
 
+# Arbitrary, fixed key for the session-level advisory lock run_migrations() takes.
+# Advisory locks are scoped per-database, and policy and member never share one, so
+# this literal being reused verbatim in policy/db.py cannot cause a cross-service
+# collision. Any fixed value works; this one has no meaning beyond being constant.
+_MIGRATION_LOCK_KEY = 847_216_305
+
+
 async def run_migrations(pool: asyncpg.Pool, directory: Path) -> list[str]:
     """Apply every migrations/*.sql file not yet recorded in schema_migrations, in
     filename order, each inside its own transaction with its version recorded in that
@@ -74,55 +81,80 @@ async def run_migrations(pool: asyncpg.Pool, directory: Path) -> list[str]:
 
     Refuses outright, before applying anything, if recorded history and disk disagree:
     a recorded version with no file on disk, or an applied file whose bytes no longer
-    match its recorded checksum. Both mean someone edited history after the fact, and
-    applying further migrations on top of an unknown starting point would turn that
-    into silent drift instead of a loud failure -- the one thing ADR-0013 calls
-    load-bearing about this runner.
+    match its recorded checksum. Both are checked in one pre-flight pass, before the
+    first unapplied file runs -- catching a mismatch mid-run would mean this call had
+    already advanced the schema on top of history it had just proven corrupt. Both
+    conditions mean someone edited history after the fact, and continuing on an unknown
+    starting point would turn that into silent drift instead of a loud failure -- the
+    one thing ADR-0013 calls load-bearing about this runner.
+
+    Takes a session-level pg_advisory_lock for the duration of the run, so two
+    replicas starting together serialize instead of racing: the second blocks here and,
+    once the first releases the lock, finds every file already recorded and returns an
+    empty list. Without it, two connections can both pass CREATE TABLE IF NOT EXISTS's
+    existence check before either commits (a known Postgres race on the catalog) or
+    both attempt to record the same version, and the failure surfaces as a
+    UniqueViolationError that reads like corruption instead of ordinary concurrency.
+    A session lock, not pg_advisory_xact_lock, because the run's several per-file
+    transactions each commit individually -- a lock tied to any single one of them
+    would release before the next file's transaction begins.
     """
     files = sorted(directory.glob("*.sql"))
     on_disk = {file.name for file in files}
 
     async with pool.acquire() as connection:
-        await connection.execute(
-            """
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                version text PRIMARY KEY,
-                applied_at timestamptz NOT NULL DEFAULT now(),
-                checksum text NOT NULL
-            )
-            """
-        )
-
-        recorded = {
-            row["version"]: row["checksum"]
-            for row in await connection.fetch("SELECT version, checksum FROM schema_migrations")
-        }
-
-        missing = sorted(set(recorded) - on_disk)
-        if missing:
-            raise MigrationError(
-                f"recorded migration(s) have no file on disk: {', '.join(missing)}"
-            )
-
-        applied: list[str] = []
-        for file in files:
-            checksum = hashlib.sha256(file.read_bytes()).hexdigest()
-
-            if file.name in recorded:
-                if recorded[file.name] != checksum:
-                    raise MigrationError(
-                        f"{file.name} has changed since it was applied "
-                        f"(recorded checksum {recorded[file.name]}, now {checksum})"
-                    )
-                continue
-
-            async with connection.transaction():
-                await connection.execute(file.read_text())
-                await connection.execute(
-                    "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)",
-                    file.name,
-                    checksum,
+        await connection.execute("SELECT pg_advisory_lock($1)", _MIGRATION_LOCK_KEY)
+        try:
+            await connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version text PRIMARY KEY,
+                    applied_at timestamptz NOT NULL DEFAULT now(),
+                    checksum text NOT NULL
                 )
-            applied.append(file.name)
+                """
+            )
+
+            recorded = {
+                row["version"]: row["checksum"]
+                for row in await connection.fetch(
+                    "SELECT version, checksum FROM schema_migrations"
+                )
+            }
+
+            missing = sorted(set(recorded) - on_disk)
+            if missing:
+                raise MigrationError(
+                    f"recorded migration(s) have no file on disk: {', '.join(missing)}"
+                )
+
+            # Every file's checksum, computed once and reused below so an unapplied
+            # file is not re-read from disk a second time in the apply loop.
+            checksums = {file.name: hashlib.sha256(file.read_bytes()).hexdigest() for file in files}
+
+            mismatched = sorted(
+                name for name, checksum in recorded.items() if checksums[name] != checksum
+            )
+            if mismatched:
+                raise MigrationError(
+                    "applied migration(s) no longer match their recorded checksum: "
+                    + ", ".join(mismatched)
+                )
+
+            applied: list[str] = []
+            for file in files:
+                if file.name in recorded:
+                    continue
+
+                async with connection.transaction():
+                    await connection.execute(file.read_text())
+                    await connection.execute(
+                        "INSERT INTO schema_migrations (version, checksum) VALUES ($1, $2)",
+                        file.name,
+                        checksums[file.name],
+                    )
+                applied.append(file.name)
+        finally:
+            await connection.execute("SELECT pg_advisory_unlock($1)", _MIGRATION_LOCK_KEY)
 
     return applied
