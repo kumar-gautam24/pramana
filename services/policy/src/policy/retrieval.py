@@ -41,13 +41,18 @@ async def _governing_policy_ids(session: AsyncSession, on: date) -> list[int]:
     Resolving after the candidate cut would let an un-retrieved version silently hand
     governance to a superseded one: if the current version's chunks never made the top
     `CANDIDATES`, `in_force_on` would see only stale versions and declare one of them the
-    winner. Querying the (tiny) policies table directly avoids that."""
-    policies = (await session.execute(select(Policy))).scalars().all()
-    by_display: dict[str, list[Policy]] = defaultdict(list)
-    for policy in policies:
-        by_display[policy.display_id].append(policy)
+    winner. Querying the (tiny) policies table directly avoids that.
 
-    winners = (in_force_on(versions, on) for versions in by_display.values())
+    Versions of one document are grouped by `document_id`, the key the corpus is unique
+    on -- see the `(document_id, document_version)` constraint on Policy. `display_id` is
+    the human label and CMS renumbers it across revisions, so grouping by it would split
+    one document's history into two lineages and let both of them govern the same date."""
+    policies = (await session.execute(select(Policy))).scalars().all()
+    by_document: dict[str, list[Policy]] = defaultdict(list)
+    for policy in policies:
+        by_document[policy.document_id].append(policy)
+
+    winners = (in_force_on(versions, on) for versions in by_document.values())
     return [winner.id for winner in winners if winner is not None]
 
 

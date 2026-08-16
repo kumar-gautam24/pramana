@@ -155,6 +155,45 @@ async def test_a_superseded_version_never_governs_even_when_it_fills_the_candida
     assert hits[0].chunk_id == current.id
 
 
+async def test_a_renumbered_display_id_does_not_split_one_document_into_two_lineages(
+    db_session,
+):
+    """Versions of one document must be grouped by `document_id` -- the key the corpus is
+    unique on -- not by `display_id`, which CMS renumbers across revisions. Grouped by the
+    label, these two rows look like two separate documents, each resolves as governing on
+    its own, and the superseded version comes back alongside the current one."""
+    old = await _policy(
+        db_session,
+        document_id="777",
+        version=1,
+        display_id="240.4",
+        effective_from=date(2008, 1, 1),
+        effective_to=None,
+    )
+    superseded = await _chunk(db_session, old, 0, "zephyrgadget superseded chunk")
+
+    new = await _policy(
+        db_session,
+        document_id="777",
+        version=2,
+        display_id="240.4.1",
+        effective_from=date(2020, 1, 1),
+        effective_to=None,
+    )
+    current = await _chunk(db_session, new, 0, "zephyrgadget current chunk")
+
+    hits = await search(
+        db_session,
+        StubEmbedder(),
+        ScoreByText({superseded.text: 2.0, current.text: 1.0}),
+        "zephyrgadget",
+        on=date(2021, 6, 1),
+        limit=5,
+    )
+
+    assert [hit.chunk_id for hit in hits] == [current.id]
+
+
 async def test_a_date_before_any_version_returns_no_hits(db_session):
     old = await _policy(
         db_session,
