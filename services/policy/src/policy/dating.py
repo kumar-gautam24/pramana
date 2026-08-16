@@ -11,6 +11,7 @@ from typing import Protocol
 class Versioned(Protocol):
     effective_from: date
     effective_to: date | None
+    document_version: int
 
 
 def in_force_on[V: Versioned](versions: list[V], on: date) -> V | None:
@@ -26,6 +27,9 @@ def in_force_on[V: Versioned](versions: list[V], on: date) -> V | None:
     ]
     if not covering:
         return None
-    # Overlapping ranges do occur. The later determination governs; without this the
-    # result would depend on row order.
-    return max(covering, key=lambda v: v.effective_from)
+    # Overlapping ranges do occur, and CMS occasionally publishes two versions with the
+    # same effective_from. Break ties by document_version, not row order: a higher
+    # document_version is the later determination, so it governs by the same principle
+    # already applied to effective_from. Without a deterministic tiebreaker the result
+    # would depend on row order, which fails an audit.
+    return max(covering, key=lambda v: (v.effective_from, v.document_version))

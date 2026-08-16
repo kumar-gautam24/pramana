@@ -9,6 +9,7 @@ class Version:
     name: str
     effective_from: date
     effective_to: date | None
+    document_version: int = 1
 
 
 V1 = Version("v1", date(2008, 3, 13), date(2019, 12, 31))
@@ -60,3 +61,15 @@ def test_overlapping_versions_pick_the_latest_start():
 
 def test_no_versions_yields_nothing():
     assert in_force_on([], date(2020, 1, 1)) is None
+
+
+def test_tied_effective_from_picks_the_higher_document_version():
+    """CMS occasionally publishes a corrected or duplicate row with the same start date.
+    A higher document_version is the later determination, so it governs -- the same
+    principle already applied to effective_from. Without this tiebreaker the result would
+    depend on row order, which fails an audit."""
+    older = Version("older", date(2015, 1, 1), None, document_version=1)
+    newer = Version("newer", date(2015, 1, 1), None, document_version=2)
+
+    assert in_force_on([older, newer], date(2020, 1, 1)) is newer
+    assert in_force_on([newer, older], date(2020, 1, 1)) is newer
