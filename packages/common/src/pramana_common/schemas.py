@@ -109,3 +109,17 @@ class Determination(BaseModel):
             reason=decision.reason,
             criteria=tuple(criteria),
         )
+
+
+class Hit(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    chunk_id: int
+    policy_id: int
+    #: The number a human cites, e.g. "240.4".
+    display_id: str
+    heading_path: str
+    text: str
+    #: The cross-encoder's score, not the fused score. RRF scores carry no relevance
+    #: information, so this is the only value downstream stages can threshold on.
+    score: float
