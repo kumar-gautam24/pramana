@@ -39,7 +39,16 @@ for a claim. The system asserts nothing it lacks pramāṇa for.
 
 5. **Database per service.** No shared tables, no cross-service joins, each service owns its
    own migrations. `packages/common` is the single coupling point and holds only wire schemas
-   and the decision gate.
+   and the decision gate — never database code.
+
+5a. **Raw SQL, no ORM.** Queries are SQL written out in full and executed through `asyncpg`;
+   migrations are numbered `.sql` files applied by a runner that records what it applied.
+   No SQLAlchemy declarative models, no Alembic. In a system an insurance commissioner may
+   audit, "show me the query that decided this" needs a literal answer. See ADR-0013.
+
+5b. **Layered structure**: `routers/` → `services/` → `repositories/` → `models/`, with pure
+   I/O-free logic in `domain/`. SQL lives in `repositories/` and nowhere else. `main.py` is
+   app assembly only.
 
 6. **Redis carries work; Postgres carries truth.** Job state lives in the owning service's
    database, so status still answers when the broker is down.
