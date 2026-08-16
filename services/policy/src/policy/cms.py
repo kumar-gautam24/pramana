@@ -10,14 +10,19 @@ from datetime import date, datetime
 
 import httpx
 
-#: Payload fields carrying prose worth retrieving. Ordered as a reader meets them.
-SECTION_FIELDS = (
-    "item_service_description",
-    "indications_limitations",
-    "cross_reference",
-    "reasons_for_denial",
-    "other_text",
-)
+#: Payload fields carrying prose worth retrieving, each mapped to the heading a reader
+#: would recognise it by. Ordered as a reader meets them. Ingest reads its headings from
+#: here rather than keeping its own copy: a second list would drift, and the drift would
+#: surface only as a citation headed "reasons_for_denial".
+SECTION_HEADINGS = {
+    "item_service_description": "Item/Service Description",
+    "indications_limitations": "Indications and Limitations of Coverage",
+    "cross_reference": "Cross Reference",
+    "reasons_for_denial": "Reasons for Denial",
+    "other_text": "Other",
+}
+
+SECTION_FIELDS = tuple(SECTION_HEADINGS)
 
 _VIEW_URL = "https://www.cms.gov/medicare-coverage-database/view/ncd.aspx?ncdid={id}&ncdver={ver}"
 

@@ -7,8 +7,6 @@ from fastembed import TextEmbedding
 
 from policy.config import get_settings
 
-DIMENSIONS = 384
-
 
 class Embedder:
     def __init__(self, model_name: str | None = None) -> None:

@@ -10,18 +10,9 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from policy.chunking import chunk_sections
-from policy.cms import NcdRecord
+from policy.cms import SECTION_HEADINGS, NcdRecord
 from policy.models import Chunk, Policy
 from policy.parsing import html_to_sections
-
-#: Payload field name to the heading a reader would recognise it by.
-SECTION_HEADINGS = {
-    "item_service_description": "Item/Service Description",
-    "indications_limitations": "Indications and Limitations of Coverage",
-    "cross_reference": "Cross Reference",
-    "reasons_for_denial": "Reasons for Denial",
-    "other_text": "Other",
-}
 
 
 @dataclass(frozen=True)
@@ -49,9 +40,10 @@ async def ingest_ncd(
 
         sections = []
         for field, raw_html in record.sections_html.items():
-            sections.extend(
-                html_to_sections(raw_html, root_heading=SECTION_HEADINGS.get(field, field))
-            )
+            # Indexed, not `.get(field, field)`: a payload field with no heading is a
+            # mistake to fix, and defaulting to the raw field name would hide it behind a
+            # citation reading "reasons_for_denial".
+            sections.extend(html_to_sections(raw_html, root_heading=SECTION_HEADINGS[field]))
 
         chunks = chunk_sections(sections)
         if not chunks:

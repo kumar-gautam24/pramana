@@ -60,6 +60,9 @@ class Chunk(Base):
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     heading_path: Mapped[str] = mapped_column(Text, nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
+    #: 384 is bge-small's output width. It is a column type, so it cannot follow the
+    #: configured model at runtime: changing the embedding model means a migration and a
+    #: re-embed of the whole corpus, not a settings edit.
     embedding: Mapped[list[float]] = mapped_column(Vector(384), nullable=False)
     #: Generated rather than populated in Python: the database is the only place that can
     #: guarantee it stays in step with `text`.
