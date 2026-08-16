@@ -30,3 +30,21 @@ async def db_session(engine):
         async with factory() as session:
             yield session
         await transaction.rollback()
+
+
+@pytest.fixture
+async def routed_session(engine, monkeypatch):
+    """Same rollback-per-test transaction as db_session, plus member.main's own
+    SessionFactory patched to the same connection -- so a route function can be called
+    directly (`await main.coverage(...)`) and see rows this fixture inserted, without a
+    route test ever touching the real database."""
+    from member import main
+
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        await connection.run_sync(Base.metadata.create_all)
+        factory = async_sessionmaker(bind=connection, expire_on_commit=False)
+        monkeypatch.setattr(main, "SessionFactory", factory)
+        async with factory() as session:
+            yield session
+        await transaction.rollback()

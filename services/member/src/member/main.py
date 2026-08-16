@@ -2,12 +2,13 @@ from contextlib import asynccontextmanager
 from datetime import date
 from typing import Annotated
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import text
 
 from member.db import SessionFactory, engine
+from member.models import Member
 from member.queries import (
     adherence,
     conditions_before,
@@ -113,6 +114,15 @@ class NoteOut(BaseModel):
 @app.get("/members/{member_id}/coverage")
 async def coverage(member_id: str, on: date) -> CoverageOut:
     async with SessionFactory() as session:
+        # coverage_start is non-nullable, so a member row's absence can only mean "no
+        # record of this member" -- never "no coverage". coverage_active alone can't
+        # tell those apart (it answers False for both), and collapsing them here would
+        # let a member missing from the system be treated as a member proven uncovered:
+        # a data-availability failure masquerading as a fact that supports denial. The
+        # other routes don't need this check -- an empty condition or note list for an
+        # unknown member is still a true fact, since absence of conditions is a fact.
+        if await session.get(Member, member_id) is None:
+            raise HTTPException(status_code=404, detail="member not found")
         active = await coverage_active(session, member_id, on)
     return CoverageOut(active=active)
 
