@@ -35,9 +35,12 @@ async def test_policy_is_unique_per_document_version(db_session):
         await policies_repo.insert(db_session, **kwargs)
 
 
-async def test_chunk_embedding_must_be_384_dimensions(db_session):
-    """bge-small-en-v1.5 emits 384 dimensions. A mismatch here fails at insert time with
-    a pgvector error, not silent truncation or padding."""
+async def test_chunk_embedding_must_be_exactly_384_dimensions(db_session):
+    """bge-small-en-v1.5 emits 384 dimensions. Checking only that *some* wrong size is
+    rejected (e.g. 10) does not pin the column at 384 -- a column declared vector(256)
+    would reject a 10-dim vector identically and this test would not notice. Asserting
+    the boundary on both sides -- 384 succeeds, 385 fails -- is what a changed
+    dimension cannot survive."""
     policy = await policies_repo.insert(
         db_session,
         document_id="801",
@@ -50,9 +53,14 @@ async def test_chunk_embedding_must_be_384_dimensions(db_session):
         source_url="https://example.invalid/801",
     )
 
+    inserted = await chunks_repo.insert_many(
+        db_session, policy.id, [(0, "Root", "text", [0.0] * 384)]
+    )
+    assert len(inserted[0].embedding) == 384
+
     with pytest.raises(asyncpg.PostgresError):
         await chunks_repo.insert_many(
-            db_session, policy.id, [(0, "Root", "text", [0.0] * 10)]
+            db_session, policy.id, [(1, "Root", "text", [0.0] * 385)]
         )
 
 
