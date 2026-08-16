@@ -122,6 +122,10 @@ async def search(
             select(Chunk, Policy)
             .join(Policy, Chunk.policy_id == Policy.id)
             .where(Chunk.id.in_(ids))
+            # Rerank scores tie, and the sort below is stable, so without an explicit
+            # order the surviving hit would be whichever row Postgres happened to return
+            # first. Cited evidence has to be the same on every run -- CLAUDE.md 7.
+            .order_by(Chunk.id)
         )
     ).all()
     if not rows:
