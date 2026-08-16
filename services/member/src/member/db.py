@@ -1,9 +1,16 @@
-"""Async engine and session factory.
+"""The asyncpg foundation: pool(), probe(), run_migrations(). Per ADR-0013.
 
-`create_async_engine` opens no connection, so constructing it proves nothing about the
-URL beyond it being parseable -- a database that does not exist surfaces only on the
-first query. Startup probes the engine (see the lifespan in main.py) so misconfiguration
-fails before the service accepts traffic."""
+The SQLAlchemy engine/`SessionFactory` below are dead code as of this task -- main.py's
+lifespan now probes through `pool()`/`probe()`, and no route or repository imports
+either name any more. They are left in place, unused, because removing them is Task 6's
+job (the same sweep that drops the `sqlalchemy`/`alembic` dependencies from
+pyproject.toml); deleting them here would be a scope creep this task didn't need.
+
+This file intentionally duplicates services/policy/src/policy/db.py rather than
+sharing it from packages/common: a migration runner is infrastructure, not a wire
+contract, and packages/common is reserved for the latter. Two small files that can
+diverge (member never needs the vector codec policy does) beat a shared dependency
+that would couple the two services' deploy cycles for no gain."""
 
 import hashlib
 from pathlib import Path
@@ -13,20 +20,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from member.config import get_settings
 
+# Unused (see module docstring) -- kept only because removing it is Task 6's job.
 engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
 SessionFactory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-
-# --- ADR-0013: the asyncpg foundation, added alongside the engine above --------------
-#
-# This sweep migrates queries off the engine above one task at a time; until the last
-# one lands, both have to work. Nothing above this line is touched by this change.
-#
-# This file intentionally duplicates services/policy/src/policy/db.py rather than
-# sharing it from packages/common: a migration runner is infrastructure, not a wire
-# contract, and packages/common is reserved for the latter. Two small files that can
-# diverge (member never needs the vector codec policy does) beat a shared dependency
-# that would couple the two services' deploy cycles for no gain.
 
 
 class MigrationError(Exception):
