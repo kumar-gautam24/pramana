@@ -11,7 +11,20 @@ from pramana_common.schemas import (
     CriterionOutcome,
     Determination,
     EvidenceSpan,
+    Hit,
 )
+
+
+def _hit(**overrides) -> Hit:
+    fields = {
+        "chunk_id": 1902,
+        "policy_id": 7,
+        "display_id": "240.4",
+        "heading_path": "Indications and Limitations > B. Nationally Covered Indications",
+        "text": "AHI greater than or equal to 15 events per hour",
+        "score": 4.2,
+    }
+    return Hit(**(fields | overrides))
 
 
 def test_case_request_round_trips_through_json():
@@ -146,6 +159,31 @@ def test_determination_blocking_cannot_be_mutated_in_place():
 
     with pytest.raises(AttributeError):
         determination.blocking.append("C9")
+
+
+def test_hit_round_trips_through_json():
+    """A Hit crosses the wire from policy to adjudication, so JSON is its real form."""
+    hit = _hit()
+
+    assert Hit.model_validate_json(hit.model_dump_json()) == hit
+
+
+def test_hit_cannot_be_mutated_after_construction():
+    """A hit is the cited evidence behind a determination and is recorded as such.
+    Rewriting its text or its score after the fact would rewrite the audit trail."""
+    hit = _hit()
+
+    with pytest.raises(ValidationError):
+        hit.score = 9.9
+
+
+@pytest.mark.parametrize("score", [-11.5, -1.0, 0.0, 1.0, 8.75])
+def test_hit_score_is_unbounded_in_both_directions(score):
+    """The cross-encoder emits a raw logit, not a probability: negative scores are the
+    normal case for a poor match, and strong matches run well above 1. Constraining this
+    to [0, 1] later would reject valid hits from a service that never changed -- so the
+    absence of a bound is asserted here rather than left to be discovered."""
+    assert _hit(score=score).score == pytest.approx(score)
 
 
 def test_criterion_carries_the_chunk_it_came_from():
