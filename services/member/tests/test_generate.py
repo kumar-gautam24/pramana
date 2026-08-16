@@ -29,7 +29,9 @@ def test_ahi_is_consistent_with_the_raw_counts():
     counts, one criterion would pass and its sibling fail on the same study."""
     profile = generate_sleep_profile("M1", seed=7, study_date=STUDY_DATE)
 
-    assert profile.ahi == pytest.approx(profile.apnea_events / profile.recorded_hours, abs=0.05)
+    # Exact equality, not a tolerance: ahi is this division and nothing else, so any
+    # slack here would hide a future change that started rounding the one derived value.
+    assert profile.ahi == profile.apnea_events / profile.recorded_hours
 
 
 @pytest.mark.parametrize(
@@ -53,7 +55,22 @@ def test_near_miss_high_is_below_fifteen_but_only_just():
         profile = generate_sleep_profile(
             member, seed=3, study_date=STUDY_DATE, target="near_miss_high"
         )
-        assert 14.0 <= profile.ahi < 15.0
+        # Strictly above 14.0, the mild band's ceiling, not merely at or above it: at
+        # exactly 14.0 this profile is also inside the 5-14 band, where a documented
+        # symptom or comorbidity approves it. `>=` encoded that overlap instead of
+        # catching it. The composed consequence is in tests/test_fixture_population.py.
+        assert 14.0 < profile.ahi < 15.0
+
+
+def test_just_qualifying_clears_fifteen_but_only_just():
+    """The approval that sits closest to the line. The refusal side had three
+    near-misses and the approval side none, so (15, 20) was unbuildable -- and a
+    boundary is only tested from one direction if only one direction is constructible."""
+    for member in (f"M{i}" for i in range(30)):
+        profile = generate_sleep_profile(
+            member, seed=3, study_date=STUDY_DATE, target="just_qualifying"
+        )
+        assert 15.0 < profile.ahi < 20.0
 
 
 def test_borderline_high_qualifies_exactly_at_the_threshold():

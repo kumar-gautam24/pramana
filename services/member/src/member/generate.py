@@ -22,6 +22,7 @@ from datetime import date, timedelta
 STUDY_TARGETS = frozenset(
     {
         "qualifying",
+        "just_qualifying",
         "borderline_high",
         "near_miss_high",
         "mild_range",
@@ -57,9 +58,20 @@ TEST_TYPES = frozenset(_TEST_TYPES)
 
 #: (low, high) AHI bounds per study target, inclusive. `borderline_high` is handled
 #: separately below because hitting exactly 15.0 needs integer hours, not a band.
+#:
+#: No two bands may touch, and `near_miss_high` is why: it used to start at 14.0, the
+#: same value `mild_range` ends on, and that shared endpoint was reachable. A member
+#: drawn there was simultaneously "just below the AHI threshold" (refused) and "inside
+#: the 5-14 band" (approved on a documented symptom or comorbidity), so the population's
+#: one deliberate refusal turned into an approval whenever its Synthea record happened
+#: to carry a qualifying comorbidity. See tests/test_fixture_population.py, which
+#: asserts the composed property no single module here can see.
 _AHI_BANDS: dict[str, tuple[float, float]] = {
     "qualifying": (20.0, 60.0),
-    "near_miss_high": (14.0, 14.99),
+    # The approval that sits closest to the line. Without it (15, 20) was unbuildable,
+    # leaving the refusal side three near-misses and the approval side none.
+    "just_qualifying": (15.1, 19.9),
+    "near_miss_high": (14.2, 14.9),
     "mild_range": (5.0, 14.0),
     "below_threshold": (1.0, 4.9),
 }
@@ -139,8 +151,6 @@ def generate_sleep_profile(
         # than drawing an AHI and rounding it into an event count: ceil/floor here
         # guarantee events / recorded_hours lands inside [low, high], where rounding
         # an independently-drawn AHI could push the ratio outside the named band.
-        import math
-
         lo_events = math.ceil(low * recorded_hours)
         hi_events = math.floor(high * recorded_hours)
         apnea_events = severity_rng.randint(lo_events, hi_events)
