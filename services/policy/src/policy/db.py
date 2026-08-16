@@ -1,7 +1,9 @@
 """Async engine and session factory.
 
-Created at import so a bad DATABASE_URL fails the service at startup rather than on the
-first query."""
+`create_async_engine` opens no connection, so constructing it proves nothing about the
+URL beyond it being parseable -- a database that does not exist surfaces only on the
+first query. Startup probes the engine (see the lifespan in main.py) so misconfiguration
+fails before the service accepts traffic."""
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
