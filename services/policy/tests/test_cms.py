@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from policy.cms import parse_cms_date, parse_ncd_response
+from policy.services.cms import parse_cms_date, parse_ncd_response
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "ncd-226.json").read_text())
 

@@ -6,11 +6,11 @@ safe rather than a way to double the corpus."""
 
 from dataclasses import dataclass
 
-from policy.chunking import chunk_sections
-from policy.cms import SECTION_HEADINGS, NcdRecord
-from policy.parsing import html_to_sections
+from policy.domain.chunking import chunk_sections
+from policy.domain.parsing import html_to_sections
 from policy.repositories import chunks as chunks_repo
 from policy.repositories import policies as policies_repo
+from policy.services.cms import SECTION_HEADINGS, NcdRecord
 
 
 @dataclass(frozen=True)

@@ -31,9 +31,9 @@ def _row_to_policy(row: asyncpg.Record) -> Policy:
 
 
 async def fetch_all(conn) -> list[Policy]:
-    """Every version of every policy. The governing-version lookup in retrieval.py
+    """Every version of every policy. The governing-version lookup in services/search.py
     resolves from this full table, before retrieval narrows anything -- never from a
-    set of already-retrieved candidates. See policy.retrieval._governing_policy_ids."""
+    set of already-retrieved candidates. See policy.services.search._governing_policy_ids."""
     rows = await conn.fetch(f"SELECT {_COLUMNS} FROM policies")
     return [_row_to_policy(row) for row in rows]
 

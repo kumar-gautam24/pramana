@@ -2,7 +2,7 @@
 the seeded population plan 04's adjudication pipeline and plan 06's golden set run
 against.
 
-Idempotent by member id, matching plan 02's ingest rule (`policy.ingest.ingest_ncd`):
+Idempotent by member id, matching plan 02's ingest rule (`policy.services.ingest.ingest_ncd`):
 seeding runs after failures and on a schedule, so re-seeding a member already present
 must be a no-op rather than a way to double the population. `SeedResult` reports rows
 added *by this call*, the same delta convention `IngestResult` uses, so a no-op run

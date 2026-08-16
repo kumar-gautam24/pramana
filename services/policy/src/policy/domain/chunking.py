@@ -7,7 +7,7 @@ keeps the heading path a reviewer would use to find it. A citation that names
 import re
 from dataclasses import dataclass
 
-from policy.parsing import Section
+from policy.domain.parsing import Section
 
 _SENTENCE_END = re.compile(r"(?<=[.;:])\s+")
 

@@ -1,37 +1,18 @@
-"""Hybrid retrieval: dense similarity, lexical matching, fused, then reranked.
+"""Search orchestration: resolve the governing version, retrieve, fuse, rerank.
 
-Dense search understands meaning; lexical search catches exact tokens like "AHI" and
-"Type IV" that embeddings blur. Fusing them uses agreement between two different notions
-of relevance."""
+The SQL this calls lives in policy.repositories; the pure fusion math lives in
+policy.domain.retrieval."""
 
 from collections import defaultdict
 from datetime import date
 
 from pramana_common.schemas import Hit
 
-from policy.dating import in_force_on
+from policy.domain.dating import in_force_on
+from policy.domain.retrieval import CANDIDATES, reciprocal_rank_fusion
 from policy.models import Policy
 from policy.repositories import chunks as chunks_repo
 from policy.repositories import policies as policies_repo
-
-#: How many chunks survive fusion into reranking. Wider costs latency; narrower drops
-#: documents the cross-encoder would have promoted.
-CANDIDATES = 20
-
-
-def reciprocal_rank_fusion(
-    rankings: list[list[int]], k: int = 60
-) -> list[tuple[int, float]]:
-    """Combine rankings by reciprocal rank.
-
-    The score depends only on position, never on the underlying similarity, so it says
-    nothing about whether the top result is actually relevant. That is why the escalation
-    gate is built on the cross-encoder score instead -- see docs/decisions/0007."""
-    scores: dict[int, float] = defaultdict(float)
-    for ranking in rankings:
-        for position, chunk_id in enumerate(ranking):
-            scores[chunk_id] += 1.0 / (k + position + 1)
-    return sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
 
 
 async def _governing_policy_ids(conn, on: date) -> list[int]:

@@ -51,9 +51,10 @@ def test_ready_is_unready_before_the_models_are_loaded(client):
 
 
 def test_ready_is_unready_when_the_database_is_unreachable(monkeypatch, started):
-    # main._probe_database() opens its own pool from policy.db.get_settings() rather
-    # than app.state.pool (see main.py), so redirecting that one seam is enough to make
-    # the check fail without an engine object to swap out.
+    # db.probe_fresh() opens its own pool from policy.db.get_settings() rather than
+    # app.state.pool (see main.py's lifespan and routers/health.py's /ready), so
+    # redirecting that one seam is enough to make the check fail without an engine
+    # object to swap out.
     monkeypatch.setattr(db, "get_settings", _unreachable_settings)
 
     response = started.get("/ready")

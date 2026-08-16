@@ -90,6 +90,17 @@ async def probe(pool: asyncpg.Pool) -> None:
         await connection.execute("SELECT 1")
 
 
+async def probe_fresh() -> None:
+    """The same check, through a dedicated, throwaway pool -- not the app's own pool --
+    so it behaves identically whether or not the app has finished, or even started, its
+    bootstrap. That is what makes it callable from both the lifespan and /ready."""
+    fresh = await pool()
+    try:
+        await probe(fresh)
+    finally:
+        await fresh.close()
+
+
 # Arbitrary, fixed key for the session-level advisory lock run_migrations() takes.
 # Advisory locks are scoped per-database, and policy and member never share one, so
 # this literal being reused verbatim in member/db.py cannot cause a cross-service

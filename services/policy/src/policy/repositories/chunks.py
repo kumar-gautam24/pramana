@@ -2,7 +2,8 @@
 feeds reranking, and the ingest insert.
 
 Dense search understands meaning; lexical search catches exact tokens like "AHI" and
-"Type IV" that embeddings blur -- see policy.retrieval for how the two are fused."""
+"Type IV" that embeddings blur -- see policy.domain.retrieval for how the two are
+fused and policy.services.search for the orchestration that calls it."""
 
 import asyncpg
 

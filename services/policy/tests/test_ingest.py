@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from policy.cms import NcdRecord, parse_ncd_response
-from policy.ingest import ingest_ncd
 from policy.repositories import chunks as chunks_repo
 from policy.repositories import policies as policies_repo
+from policy.services.cms import NcdRecord, parse_ncd_response
+from policy.services.ingest import ingest_ncd
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "ncd-226.json").read_text())
 

@@ -2,10 +2,11 @@ from datetime import date
 
 import pytest
 
+from policy.domain.retrieval import reciprocal_rank_fusion
 from policy.models import Chunk, Policy
 from policy.repositories import chunks as chunks_repo
 from policy.repositories import policies as policies_repo
-from policy.retrieval import reciprocal_rank_fusion, search
+from policy.services.search import search
 
 #: A fixed dimension-384 vector reused everywhere. Dense ranking is not the thing under
 #: test here -- correctness of the date filter turns on the SQL-level policy_id

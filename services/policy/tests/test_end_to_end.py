@@ -18,9 +18,9 @@ from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
-from policy.cms import parse_ncd_response
-from policy.ingest import ingest_ncd
-from policy.retrieval import search
+from policy.services.cms import parse_ncd_response
+from policy.services.ingest import ingest_ncd
+from policy.services.search import search
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "ncd-226.json").read_text())
 
