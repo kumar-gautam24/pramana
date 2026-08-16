@@ -2,6 +2,7 @@ from datetime import date
 
 import pytest
 
+import member.generate as generate_module
 from member.generate import TARGETS, TEST_TYPES, generate_sleep_profile, generate_usage_nights
 
 STUDY_DATE = date(2026, 1, 10)
@@ -85,6 +86,37 @@ def test_invalid_test_type_is_outside_the_accepted_enum():
         )
         assert profile.test_type not in TEST_TYPES
         assert profile.ahi >= 15.0
+
+
+def test_severity_is_independent_of_the_test_type_draw(monkeypatch):
+    """recorded_hours/apnea_events/ahi come from their own stream, separate from
+    test_type/channels. If they shared one stream, a change to how one attribute is
+    drawn (e.g. widening a channel range) would silently shift every attribute drawn
+    after it for any member whose earlier draw happened to land differently -- which
+    is exactly what happened when home_type_iv's range widened in the prior fix."""
+    members = [f"M{i}" for i in range(30)]
+    before = {
+        m: generate_sleep_profile(m, seed=3, study_date=STUDY_DATE, target="qualifying")
+        for m in members
+    }
+
+    # Disjoint from the real (3, 4) range: any member whose drawn type is
+    # home_type_iv is guaranteed a different channel count under this patch, so a
+    # change here is a meaningful probe, not a no-op.
+    monkeypatch.setitem(generate_module._TEST_TYPES, "home_type_iv", (10, 12))
+
+    after = {
+        m: generate_sleep_profile(m, seed=3, study_date=STUDY_DATE, target="qualifying")
+        for m in members
+    }
+
+    assert any(before[m].channels != after[m].channels for m in members), (
+        "patch did not move any member's channels -- the probe didn't test anything"
+    )
+    for m in members:
+        assert before[m].recorded_hours == after[m].recorded_hours
+        assert before[m].apnea_events == after[m].apnea_events
+        assert before[m].ahi == after[m].ahi
 
 
 def test_an_unknown_target_raises():

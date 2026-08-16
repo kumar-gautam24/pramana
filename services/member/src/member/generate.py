@@ -75,11 +75,18 @@ class SleepProfile:
     study_date: date
 
 
-def _rng(member_id: str, seed: int, target: str) -> random.Random:
-    # Combining all three into the seed string is what makes the stream depend on
-    # each of them: drop the target and every target would draw the same numbers;
-    # drop the member and a population would be 500 copies of one case.
-    return random.Random(f"{member_id}:{seed}:{target}")
+def _rng(member_id: str, seed: int, target: str, concern: str) -> random.Random:
+    # Combining member/seed/target into the seed string is what makes the stream
+    # depend on each of them: drop the target and every target would draw the same
+    # numbers; drop the member and a population would be 500 copies of one case.
+    #
+    # `concern` buys independence *within* one profile: MT19937's per-call bit
+    # consumption depends on the range passed to randint/choice/sample, so two
+    # draws sharing one stream are coupled -- widening one range shifts every draw
+    # after it, silently, for any member whose earlier draw happened to land on
+    # the widened branch. Giving each concern its own stream (its own seed string)
+    # means a change to how one attribute is drawn can never move another.
+    return random.Random(f"{member_id}:{seed}:{target}:{concern}")
 
 
 def generate_sleep_profile(
@@ -90,7 +97,13 @@ def generate_sleep_profile(
         # generator -- either way the caller asked for a study shape that doesn't exist.
         raise ValueError(f"unknown sleep-study target: {target!r}")
 
-    rng = _rng(member_id, seed, target)
+    # Two independent streams: which test type/channel count is drawn must not be
+    # able to perturb how severe the study is, or vice versa. Without this split,
+    # widening home_type_iv's channel range (as the previous fix round did) shifted
+    # recorded_hours/apnea_events for every member whose type happened to be
+    # home_type_iv -- see _rng's docstring comment for the mechanism.
+    type_rng = _rng(member_id, seed, target, "study-type")
+    severity_rng = _rng(member_id, seed, target, "severity")
 
     if target == "near_miss_channels":
         # A real, in-scope test type -- one channel short of NCD 240.4.1's Type IV
@@ -102,19 +115,19 @@ def generate_sleep_profile(
         # Outside `_TEST_TYPES` entirely, so the "is this an accepted study type at
         # all" check has a case that fails it -- channel count is irrelevant here,
         # the type itself is the disqualifier.
-        test_type, channels = "actigraphy", rng.randint(1, 16)
+        test_type, channels = "actigraphy", type_rng.randint(1, 16)
     else:
-        test_type = rng.choice(list(_TEST_TYPES))
-        channels = rng.randint(*_TEST_TYPES[test_type])
+        test_type = type_rng.choice(list(_TEST_TYPES))
+        channels = type_rng.randint(*_TEST_TYPES[test_type])
 
     if target == "borderline_high":
         # Exact threshold equality can't survive rounding a fractional apnea-event
         # count, so pin recorded_hours to an integer and derive events as an exact
         # multiple of 15 -- the division then lands on 15.0 with no float drift.
-        recorded_hours = float(rng.randint(5, 9))
+        recorded_hours = float(severity_rng.randint(5, 9))
         apnea_events = 15 * int(recorded_hours)
     else:
-        recorded_hours = round(rng.uniform(5.0, 9.0), 2)
+        recorded_hours = round(severity_rng.uniform(5.0, 9.0), 2)
         # near_miss_channels/invalid_test_type test validity, not AHI -- band them as
         # comfortably qualifying so the case fails on test-type validity alone, not
         # also on the AHI criterion, keeping the two criteria independently testable.
@@ -130,7 +143,7 @@ def generate_sleep_profile(
 
         lo_events = math.ceil(low * recorded_hours)
         hi_events = math.floor(high * recorded_hours)
-        apnea_events = rng.randint(lo_events, hi_events)
+        apnea_events = severity_rng.randint(lo_events, hi_events)
 
     ahi = apnea_events / recorded_hours
 
@@ -154,7 +167,12 @@ def generate_usage_nights(
     if target not in USAGE_TARGETS:
         raise ValueError(f"unknown CPAP-usage target: {target!r}")
 
-    rng = _rng(member_id, seed, target)
+    # Independent streams for the same reason as generate_sleep_profile: which
+    # nights qualify (the shape) must not be able to perturb how many hours any
+    # night logs (the magnitude), or a future change to one range would silently
+    # move the other's draws for every night after it.
+    shape_rng = _rng(member_id, seed, target, "shape")
+    hours_rng = _rng(member_id, seed, target, "hours")
 
     # As with the AHI bands, derive the *count* of qualifying nights from a fraction
     # range via floor/ceil instead of coin-flipping each night independently -- a coin
@@ -167,17 +185,17 @@ def generate_usage_nights(
 
     lo_count = math.ceil(lo_frac * nights)
     hi_count = math.floor(hi_frac * nights)
-    qualifying_count = rng.randint(lo_count, hi_count)
+    qualifying_count = shape_rng.randint(lo_count, hi_count)
 
-    qualifying_indices = set(rng.sample(range(nights), qualifying_count))
+    qualifying_indices = set(shape_rng.sample(range(nights), qualifying_count))
 
     result = []
     for i in range(nights):
         night = start + timedelta(days=i)
         if i in qualifying_indices:
-            hours = round(rng.uniform(4.0, 8.0), 2)
+            hours = round(hours_rng.uniform(4.0, 8.0), 2)
         else:
-            hours = round(rng.uniform(0.0, 3.9), 2)
+            hours = round(hours_rng.uniform(0.0, 3.9), 2)
         result.append((night, hours))
 
     return result
