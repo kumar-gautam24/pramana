@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from member.generate import TARGETS, generate_sleep_profile, generate_usage_nights
+from member.generate import TARGETS, TEST_TYPES, generate_sleep_profile, generate_usage_nights
 
 STUDY_DATE = date(2026, 1, 10)
 
@@ -61,6 +61,32 @@ def test_borderline_high_qualifies_exactly_at_the_threshold():
     assert profile.ahi == 15.0
 
 
+def test_near_miss_channels_is_an_accepted_type_that_fails_the_channel_minimum():
+    """NCD 240.4.1 accepts a Type IV study only with at least 3 channels. This is the
+    near-miss for that criterion -- a real, in-scope test type, one channel short --
+    the same way near_miss_high is the near-miss for the AHI criterion."""
+    for member in (f"M{i}" for i in range(30)):
+        profile = generate_sleep_profile(
+            member, seed=3, study_date=STUDY_DATE, target="near_miss_channels"
+        )
+        assert profile.test_type == "home_type_iv"
+        assert profile.channels == 2
+        # Qualifies comfortably on AHI, so the case fails on test-type validity
+        # alone -- the criterion under test isn't confounded by the AHI criterion.
+        assert profile.ahi >= 15.0
+
+
+def test_invalid_test_type_is_outside_the_accepted_enum():
+    """A negative case for the "is this an accepted study type at all" check, distinct
+    from near_miss_channels' "accepted type, wrong channel count"."""
+    for member in (f"M{i}" for i in range(30)):
+        profile = generate_sleep_profile(
+            member, seed=3, study_date=STUDY_DATE, target="invalid_test_type"
+        )
+        assert profile.test_type not in TEST_TYPES
+        assert profile.ahi >= 15.0
+
+
 def test_an_unknown_target_raises():
     """Silently falling back to a default would produce a golden case that does not test
     what its name says it tests."""
@@ -94,6 +120,24 @@ def test_usage_nights_are_contiguous_and_unique():
 
 
 def test_every_target_is_reachable():
-    """A target named in TARGETS but unhandled would fail only when a golden case used it."""
+    """A target named in TARGETS but unhandled by either generator would fail only
+    when a golden case used it -- so call both generators for every name and check
+    that exactly one of them accepts it. Asserting a non-empty string proves nothing:
+    a target present in TARGETS but missing from a generator's band lookup raises
+    KeyError deep inside that generator, not here, and only when someone reaches for it."""
     for target in TARGETS:
-        assert target
+        sleep_raised = usage_raised = False
+
+        try:
+            generate_sleep_profile("M1", seed=1, study_date=STUDY_DATE, target=target)
+        except ValueError:
+            sleep_raised = True
+
+        try:
+            generate_usage_nights(
+                "M1", seed=1, start=date(2026, 2, 1), nights=10, target=target
+            )
+        except ValueError:
+            usage_raised = True
+
+        assert sleep_raised != usage_raised, target

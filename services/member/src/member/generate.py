@@ -14,8 +14,11 @@ import random
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-#: AHI-shaped cases. Each name is a claim about where the resulting profile sits
-#: relative to the NCD 240.4 threshold (15 events/hour) -- see the module docstring.
+#: Most of these are AHI-shaped: each name is a claim about where the profile sits
+#: relative to the NCD 240.4 AHI threshold (15 events/hour) -- see the module
+#: docstring. Two are shaped by the *other* criterion NCD 240.4.1 gates on -- the
+#: test itself being a valid, in-scope type -- rather than by AHI at all:
+#: `near_miss_channels` and `invalid_test_type`.
 STUDY_TARGETS = frozenset(
     {
         "qualifying",
@@ -23,6 +26,8 @@ STUDY_TARGETS = frozenset(
         "near_miss_high",
         "mild_range",
         "below_threshold",
+        "near_miss_channels",
+        "invalid_test_type",
     }
 )
 
@@ -34,15 +39,21 @@ USAGE_TARGETS = frozenset({"adherent", "near_miss_adherence"})
 #: below separately enforce "is this the right kind of target".
 TARGETS = STUDY_TARGETS | USAGE_TARGETS
 
-#: (test_type, channel_count range). Channel count is what a real reviewer checks to
-#: tell a Type IV home study (the policy's minimum) from an attended lab study; the
-#: exact type doesn't gate any of the AHI targets above, so it's drawn independently.
+#: (test_type, channel_count range). NCD 240.4.1 accepts a Type IV study only with at
+#: least 3 channels, so every range here is policy-valid on its own -- the AHI targets
+#: must never accidentally produce a study that fails validity for a reason unrelated
+#: to the AHI band it's supposed to be testing. The channel-count near-miss and the
+#: out-of-enum case are built by `generate_sleep_profile` directly, below.
 _TEST_TYPES: dict[str, tuple[int, int]] = {
     "attended_psg": (8, 16),
     "home_type_ii": (5, 7),
     "home_type_iii": (3, 4),
-    "home_type_iv": (1, 3),
+    "home_type_iv": (3, 4),
 }
+
+#: Exposed (not `_`-prefixed) so tests can assert `invalid_test_type` really falls
+#: outside it, rather than hardcoding a second copy of the accepted set.
+TEST_TYPES = frozenset(_TEST_TYPES)
 
 #: (low, high) AHI bounds per study target, inclusive. `borderline_high` is handled
 #: separately below because hitting exactly 15.0 needs integer hours, not a band.
@@ -80,8 +91,21 @@ def generate_sleep_profile(
         raise ValueError(f"unknown sleep-study target: {target!r}")
 
     rng = _rng(member_id, seed, target)
-    test_type = rng.choice(list(_TEST_TYPES))
-    channels = rng.randint(*_TEST_TYPES[test_type])
+
+    if target == "near_miss_channels":
+        # A real, in-scope test type -- one channel short of NCD 240.4.1's Type IV
+        # minimum. The near-miss for the *validity* criterion, the same way
+        # near_miss_high is the near-miss for the AHI criterion: right shape, wrong
+        # side of the line the policy actually draws.
+        test_type, channels = "home_type_iv", 2
+    elif target == "invalid_test_type":
+        # Outside `_TEST_TYPES` entirely, so the "is this an accepted study type at
+        # all" check has a case that fails it -- channel count is irrelevant here,
+        # the type itself is the disqualifier.
+        test_type, channels = "actigraphy", rng.randint(1, 16)
+    else:
+        test_type = rng.choice(list(_TEST_TYPES))
+        channels = rng.randint(*_TEST_TYPES[test_type])
 
     if target == "borderline_high":
         # Exact threshold equality can't survive rounding a fractional apnea-event
@@ -91,7 +115,13 @@ def generate_sleep_profile(
         apnea_events = 15 * int(recorded_hours)
     else:
         recorded_hours = round(rng.uniform(5.0, 9.0), 2)
-        low, high = _AHI_BANDS[target]
+        # near_miss_channels/invalid_test_type test validity, not AHI -- band them as
+        # comfortably qualifying so the case fails on test-type validity alone, not
+        # also on the AHI criterion, keeping the two criteria independently testable.
+        band_key = (
+            "qualifying" if target in ("near_miss_channels", "invalid_test_type") else target
+        )
+        low, high = _AHI_BANDS[band_key]
         # Derive the event count from the band and the hours actually drawn, rather
         # than drawing an AHI and rounding it into an event count: ceil/floor here
         # guarantee events / recorded_hours lands inside [low, high], where rounding
