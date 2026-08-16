@@ -34,22 +34,53 @@ def reciprocal_rank_fusion(
     return sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
 
 
-async def _dense(session: AsyncSession, vector: list[float], limit: int) -> list[int]:
-    rows = await session.execute(
-        select(Chunk.id).order_by(Chunk.embedding.cosine_distance(vector)).limit(limit)
-    )
+async def _governing_policy_ids(session: AsyncSession, on: date) -> list[int]:
+    """The policy ids in force on `on`, resolved from every version -- not just the ones
+    that happen to survive retrieval.
+
+    Resolving after the candidate cut would let an un-retrieved version silently hand
+    governance to a superseded one: if the current version's chunks never made the top
+    `CANDIDATES`, `in_force_on` would see only stale versions and declare one of them the
+    winner. Querying the (tiny) policies table directly avoids that."""
+    policies = (await session.execute(select(Policy))).scalars().all()
+    by_display: dict[str, list[Policy]] = defaultdict(list)
+    for policy in policies:
+        by_display[policy.display_id].append(policy)
+
+    winners = (in_force_on(versions, on) for versions in by_display.values())
+    return [winner.id for winner in winners if winner is not None]
+
+
+async def _dense(
+    session: AsyncSession,
+    vector: list[float],
+    limit: int,
+    policy_ids: list[int] | None,
+) -> list[int]:
+    stmt = select(Chunk.id).order_by(Chunk.embedding.cosine_distance(vector)).limit(limit)
+    if policy_ids is not None:
+        stmt = stmt.where(Chunk.policy_id.in_(policy_ids))
+    rows = await session.execute(stmt)
     return list(rows.scalars())
 
 
-async def _lexical(session: AsyncSession, query: str, limit: int) -> list[int]:
+async def _lexical(
+    session: AsyncSession,
+    query: str,
+    limit: int,
+    policy_ids: list[int] | None,
+) -> list[int]:
     """Catches exact tokens like "AHI" and "Type IV" that embeddings blur."""
     tsquery = func.plainto_tsquery("english", query)
-    rows = await session.execute(
+    stmt = (
         select(Chunk.id)
         .where(Chunk.tsv.op("@@")(tsquery))
         .order_by(func.ts_rank(Chunk.tsv, tsquery).desc())
         .limit(limit)
     )
+    if policy_ids is not None:
+        stmt = stmt.where(Chunk.policy_id.in_(policy_ids))
+    rows = await session.execute(stmt)
     return list(rows.scalars())
 
 
@@ -61,11 +92,20 @@ async def search(
     on: date | None = None,
     limit: int = 5,
 ) -> list[Hit]:
+    # Resolve the governing version before retrieval, not after: candidates are cut down
+    # to CANDIDATES before this filter would otherwise run, and a superseded version
+    # dominating that cut must not be able to pass itself off as governing.
+    policy_ids: list[int] | None = None
+    if on is not None:
+        policy_ids = await _governing_policy_ids(session, on)
+        if not policy_ids:
+            return []
+
     vector = embedder.encode([query])[0]
     fused = reciprocal_rank_fusion(
         [
-            await _dense(session, vector, CANDIDATES),
-            await _lexical(session, query, CANDIDATES),
+            await _dense(session, vector, CANDIDATES, policy_ids),
+            await _lexical(session, query, CANDIDATES, policy_ids),
         ]
     )
     ids = [chunk_id for chunk_id, _ in fused[:CANDIDATES]]
@@ -79,25 +119,6 @@ async def search(
             .where(Chunk.id.in_(ids))
         )
     ).all()
-
-    if on is not None:
-        # Keep only chunks belonging to the version that governed the date of service. A
-        # case judged by a policy that was not yet in force is wrong in the direction that
-        # harms the member.
-        versions: dict[str, dict[int, Policy]] = defaultdict(dict)
-        for _, policy in rows:
-            versions[policy.display_id][policy.id] = policy
-        governing = {
-            display: in_force_on(list(found.values()), on)
-            for display, found in versions.items()
-        }
-        rows = [
-            (chunk, policy)
-            for chunk, policy in rows
-            if (winner := governing.get(policy.display_id)) is not None
-            and winner.id == policy.id
-        ]
-
     if not rows:
         return []
 

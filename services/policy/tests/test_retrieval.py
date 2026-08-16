@@ -1,4 +1,70 @@
-from policy.retrieval import reciprocal_rank_fusion
+from datetime import date
+
+import pytest
+
+from policy.models import Chunk, Policy
+from policy.retrieval import reciprocal_rank_fusion, search
+
+#: A fixed dimension-384 vector reused everywhere. Dense ranking is not the thing under
+#: test here -- correctness of the date filter turns on the SQL-level policy_id
+#: restriction in `search`, not on embedding similarity.
+EMBED = [0.0] * 384
+
+
+class StubEmbedder:
+    """Deterministic and instant; see StubEmbedder in test_ingest.py for the same pattern."""
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        return [EMBED for _ in texts]
+
+
+class ScoreByText:
+    """Maps a chunk's text to a score the test chose, so a returned Hit's score can be
+    checked against exactly what the reranker produced -- not a value derived from RRF
+    position, which is the failure mode `search` exists to avoid."""
+
+    def __init__(self, scores: dict[str, float]) -> None:
+        self._scores = scores
+
+    def score(self, query: str, documents: list[str]) -> list[float]:
+        return [self._scores[document] for document in documents]
+
+
+async def _policy(
+    session,
+    *,
+    document_id: str,
+    version: int,
+    display_id: str,
+    effective_from: date,
+    effective_to: date | None,
+) -> Policy:
+    policy = Policy(
+        document_id=document_id,
+        document_version=version,
+        display_id=display_id,
+        title="Test Policy",
+        effective_from=effective_from,
+        effective_to=effective_to,
+        benefit_category="",
+        source_url="https://example.invalid/test",
+    )
+    session.add(policy)
+    await session.flush()
+    return policy
+
+
+async def _chunk(session, policy: Policy, ordinal: int, text: str) -> Chunk:
+    chunk = Chunk(
+        policy_id=policy.id,
+        ordinal=ordinal,
+        heading_path="Root > Section",
+        text=text,
+        embedding=EMBED,
+    )
+    session.add(chunk)
+    await session.flush()
+    return chunk
 
 
 def test_fuses_two_rankings():
@@ -44,3 +110,125 @@ def test_fused_scores_carry_no_relevance_information():
     other = reciprocal_rank_fusion([[99]])
 
     assert one[0][1] == other[0][1]
+
+
+async def test_a_superseded_version_never_governs_even_when_it_fills_the_candidate_window(
+    db_session,
+):
+    """The bug this guards against: an open-ended old version with many chunks can win
+    every dense/lexical slot before the date filter ever runs, so resolving `in_force_on`
+    from the retrieved candidates -- instead of from every version -- would see only
+    stale chunks and crown one of them governing. Restricting retrieval to the
+    already-resolved governing policy id is what prevents that."""
+    old = await _policy(
+        db_session,
+        document_id="900",
+        version=1,
+        display_id="900.1",
+        effective_from=date(2008, 1, 1),
+        effective_to=None,
+    )
+    for i in range(25):
+        await _chunk(db_session, old, i, f"zephyrgadget superseded chunk {i}")
+
+    new = await _policy(
+        db_session,
+        document_id="900",
+        version=2,
+        display_id="900.1",
+        effective_from=date(2020, 1, 1),
+        effective_to=None,
+    )
+    current = await _chunk(db_session, new, 0, "zephyrgadget current chunk")
+
+    hits = await search(
+        db_session,
+        StubEmbedder(),
+        ScoreByText({current.text: 1.0}),
+        "zephyrgadget",
+        on=date(2021, 6, 1),
+        limit=5,
+    )
+
+    assert len(hits) == 1
+    assert hits[0].policy_id == new.id
+    assert hits[0].chunk_id == current.id
+
+
+async def test_a_date_before_any_version_returns_no_hits(db_session):
+    old = await _policy(
+        db_session,
+        document_id="901",
+        version=1,
+        display_id="901.1",
+        effective_from=date(2008, 1, 1),
+        effective_to=None,
+    )
+    await _chunk(db_session, old, 0, "zephyrgadget only chunk")
+
+    hits = await search(
+        db_session,
+        StubEmbedder(),
+        ScoreByText({}),
+        "zephyrgadget",
+        on=date(2001, 1, 1),
+        limit=5,
+    )
+
+    assert hits == []
+
+
+async def test_no_date_filter_searches_every_version(db_session):
+    old = await _policy(
+        db_session,
+        document_id="902",
+        version=1,
+        display_id="902.1",
+        effective_from=date(2008, 1, 1),
+        effective_to=date(2019, 12, 31),
+    )
+    old_chunk = await _chunk(db_session, old, 0, "zephyrgadget old chunk")
+
+    new = await _policy(
+        db_session,
+        document_id="902",
+        version=2,
+        display_id="902.1",
+        effective_from=date(2020, 1, 1),
+        effective_to=None,
+    )
+    new_chunk = await _chunk(db_session, new, 0, "zephyrgadget new chunk")
+
+    hits = await search(
+        db_session,
+        StubEmbedder(),
+        ScoreByText({old_chunk.text: 1.0, new_chunk.text: 2.0}),
+        "zephyrgadget",
+        on=None,
+        limit=5,
+    )
+
+    assert {hit.policy_id for hit in hits} == {old.id, new.id}
+
+
+async def test_hit_score_is_the_rerankers_score_not_the_fused_score(db_session):
+    policy = await _policy(
+        db_session,
+        document_id="903",
+        version=1,
+        display_id="903.1",
+        effective_from=date(2008, 1, 1),
+        effective_to=None,
+    )
+    chunk = await _chunk(db_session, policy, 0, "zephyrgadget scored chunk")
+
+    hits = await search(
+        db_session,
+        StubEmbedder(),
+        ScoreByText({chunk.text: 0.4242}),
+        "zephyrgadget",
+        on=None,
+        limit=5,
+    )
+
+    assert hits[0].score == pytest.approx(0.4242)
