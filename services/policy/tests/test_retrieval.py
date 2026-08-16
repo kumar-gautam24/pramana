@@ -109,7 +109,11 @@ def test_fused_scores_carry_no_relevance_information():
     one = reciprocal_rank_fusion([[42]])
     other = reciprocal_rank_fusion([[99]])
 
-    assert one[0][1] == other[0][1]
+    # The concrete value, not just agreement between the two: comparing them to each
+    # other alone passes for any implementation, including one that returns a real
+    # similarity, which is exactly the claim being denied here.
+    assert one[0][1] == pytest.approx(1 / 61)
+    assert other[0][1] == pytest.approx(1 / 61)
 
 
 async def test_a_superseded_version_never_governs_even_when_it_fills_the_candidate_window(

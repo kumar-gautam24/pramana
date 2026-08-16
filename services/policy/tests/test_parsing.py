@@ -101,7 +101,10 @@ def test_no_tokens_are_lost_from_the_real_document():
     markup = unescape_twice(CRITERIA_HTML)
     source = etree.fromstring(f"<root>{markup}</root>", etree.HTMLParser(recover=True))
 
-    assert _tokens(" ".join(reconstructed)) == _tokens("".join(source.itertext()))
+    # Joined on a space, not on nothing: "".join fuses adjacent text nodes into single
+    # tokens ("15events"), and a token the parser dropped can then be masked by a fused
+    # neighbour that never existed in either side.
+    assert _tokens(" ".join(reconstructed)) == _tokens(" ".join(source.itertext()))
 
 
 def test_text_after_a_heading_is_kept():

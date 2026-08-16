@@ -1,7 +1,14 @@
+import re
+from collections import Counter
+
 import pytest
 
 from policy.chunking import chunk_sections
 from policy.parsing import Section
+
+
+def _tokens(text: str) -> Counter:
+    return Counter(re.findall(r"\w+", text.lower()))
 
 
 def test_a_short_section_becomes_one_chunk():
@@ -71,6 +78,50 @@ def test_empty_input_produces_no_chunks():
 
 def test_whitespace_only_section_is_dropped():
     assert chunk_sections([Section(heading_path="Root", text="   ")]) == []
+
+
+def test_a_single_sentence_longer_than_the_window_is_cut_rather_than_dropped():
+    """The hard-cut branch: no sentence boundary exists to split on, so the splitter cuts
+    mid-text. Nothing else reaches that branch, and an unreached branch that silently
+    truncated would take a whole criterion out of the corpus with it."""
+    sentence = " ".join(f"clause{i} of the coverage requirement" for i in range(60)) + "."
+    assert len(sentence) > 2000
+
+    chunks = chunk_sections([Section(heading_path="Root > E", text=sentence)], max_chars=500)
+
+    assert len(chunks) > 1
+    assert all(len(c.text) <= 500 for c in chunks)
+    # Every word whole in at least one chunk, not merely present across the pile: a cut
+    # lands mid-word, and only the overlap carried into the next chunk restores it.
+    joined = " | ".join(c.text for c in chunks)
+    assert all(word in joined for word in sentence.rstrip(".").split())
+
+
+@pytest.mark.parametrize("overlap_chars", [0, 150])
+def test_no_content_is_lost_across_a_split(overlap_chars):
+    """Every targeted test above would still pass if the splitter quietly dropped a
+    sentence. This is the one that would not.
+
+    Run without overlap as well as with it: overlap carries the boundary sentences
+    forward, so a sentence dropped from the end of one window reappears in the next and
+    the loss hides. Zero overlap leaves nowhere for it to hide."""
+    sections = [
+        Section(
+            heading_path="Root > F",
+            text=" ".join(f"Sentence number {i} states a coverage rule." for i in range(200)),
+        ),
+        Section(heading_path="Root > G", text="A short trailing section."),
+    ]
+
+    chunks = chunk_sections(sections, max_chars=400, overlap_chars=overlap_chars)
+
+    source = _tokens(" ".join(s.text for s in sections))
+    chunked = _tokens(" ".join(c.text for c in chunks))
+    # Overlap repeats boundary sentences, so a chunk token count can only exceed the
+    # source's, never fall below it. Anything the splitter lost shows up in this
+    # subtraction; anything it invented shows up in the set comparison.
+    assert source - chunked == Counter()
+    assert set(chunked) == set(source)
 
 
 def test_overlap_must_be_smaller_than_the_window():
