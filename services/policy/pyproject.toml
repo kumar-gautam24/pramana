@@ -39,3 +39,10 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# The db_session fixture holds a session-scoped engine (see tests/conftest.py) so its
+# pooled connections stay valid across tests. Function-scoped loops (the default) tear
+# down and recreate the loop per test, and asyncpg connections bound to a torn-down loop
+# fail on the next checkout with "another operation is in progress" -- so fixtures and
+# tests alike must share one loop for the session.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
