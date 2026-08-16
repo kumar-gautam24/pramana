@@ -7,17 +7,13 @@ from typing import Annotated
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import text
 
-from member.db import SessionFactory, engine
-from member.models import Member
-from member.queries import (
-    adherence,
-    conditions_before,
-    coverage_active,
-    notes_before,
-    sleep_studies_before,
-)
+from member import db
+from member.repositories import conditions as conditions_repo
+from member.repositories import cpap_usage as cpap_usage_repo
+from member.repositories import members as members_repo
+from member.repositories import notes as notes_repo
+from member.repositories import sleep_studies as sleep_studies_repo
 from member.seed import FIXTURE_PLAN, seed_population
 from member.synthea import parse_conditions, parse_encounters, parse_patients
 
@@ -33,16 +29,27 @@ def _read_fixture_csv(name: str) -> list[dict]:
 
 
 async def _probe_database() -> None:
-    async with engine.connect() as connection:
-        await connection.execute(text("SELECT 1"))
+    """The cheapest query that proves the configured DATABASE_URL reaches a database
+    that answers. A dedicated, throwaway pool -- not app.state.pool -- so this check
+    behaves the same whether or not the app has finished, or even started, its own
+    bootstrap; that is what makes it usable from both the lifespan and /ready."""
+    probe_pool = await db.pool()
+    try:
+        await db.probe(probe_pool)
+    finally:
+        await probe_pool.close()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Fail at startup rather than on the first request: create_async_engine opens no
-    # connection, so without this a wrong DATABASE_URL starts cleanly and 500s later.
+    # Probed before the pool opens: pool() itself opens no connection (min_size=0, see
+    # db.py), so a wrong DATABASE_URL would otherwise stay invisible until the first
+    # query runs. This probe is what makes misconfiguration a startup failure instead of
+    # a 500 on the first request.
     await _probe_database()
+    app.state.pool = await db.pool()
     yield
+    await app.state.pool.close()
 
 
 app = FastAPI(title="pramana member", lifespan=lifespan)
@@ -142,7 +149,7 @@ class SeedOut(BaseModel):
 
 @app.get("/members/{member_id}/coverage")
 async def coverage(member_id: str, on: date) -> CoverageOut:
-    async with SessionFactory() as session:
+    async with app.state.pool.acquire() as conn:
         # coverage_start is non-nullable, so a member row's absence can only mean "no
         # record of this member" -- never "no coverage". coverage_active alone can't
         # tell those apart (it answers False for both), and collapsing them here would
@@ -150,16 +157,16 @@ async def coverage(member_id: str, on: date) -> CoverageOut:
         # a data-availability failure masquerading as a fact that supports denial. The
         # other routes don't need this check -- an empty condition or note list for an
         # unknown member is still a true fact, since absence of conditions is a fact.
-        if await session.get(Member, member_id) is None:
+        if await members_repo.get(conn, member_id) is None:
             raise HTTPException(status_code=404, detail="member not found")
-        active = await coverage_active(session, member_id, on)
+        active = await members_repo.coverage_active(conn, member_id, on)
     return CoverageOut(active=active)
 
 
 @app.get("/members/{member_id}/sleep-studies")
 async def sleep_studies(member_id: str, before: date) -> list[SleepStudyOut]:
-    async with SessionFactory() as session:
-        studies = await sleep_studies_before(session, member_id, before)
+    async with app.state.pool.acquire() as conn:
+        studies = await sleep_studies_repo.sleep_studies_before(conn, member_id, before)
     return [SleepStudyOut.model_validate(study) for study in studies]
 
 
@@ -167,8 +174,8 @@ async def sleep_studies(member_id: str, before: date) -> list[SleepStudyOut]:
 async def conditions(
     member_id: str, before: date, codes: Annotated[list[str], Query()]
 ) -> list[ConditionOut]:
-    async with SessionFactory() as session:
-        found = await conditions_before(session, member_id, before, codes)
+    async with app.state.pool.acquire() as conn:
+        found = await conditions_repo.conditions_before(conn, member_id, before, codes)
     return [ConditionOut.model_validate(condition) for condition in found]
 
 
@@ -177,16 +184,17 @@ async def member_adherence(
     member_id: str, start: date, end: date, min_hours: float
 ) -> AdherenceOut:
     """`min_hours` is a required query parameter, like `codes` on /conditions: the
-    nightly-hours bar is the caller's policy, not this service's (see queries.adherence)."""
-    async with SessionFactory() as session:
-        result = await adherence(session, member_id, start, end, min_hours)
+    nightly-hours bar is the caller's policy, not this service's (see
+    repositories.cpap_usage.adherence)."""
+    async with app.state.pool.acquire() as conn:
+        result = await cpap_usage_repo.adherence(conn, member_id, start, end, min_hours)
     return AdherenceOut.model_validate(result)
 
 
 @app.get("/members/{member_id}/notes")
 async def notes(member_id: str, before: date) -> list[NoteOut]:
-    async with SessionFactory() as session:
-        found = await notes_before(session, member_id, before)
+    async with app.state.pool.acquire() as conn:
+        found = await notes_repo.notes_before(conn, member_id, before)
     return [NoteOut.model_validate(note) for note in found]
 
 
@@ -200,9 +208,10 @@ async def seed(body: SeedIn) -> SeedOut:
     conditions = parse_conditions(_read_fixture_csv("conditions.csv"))
     encounters = parse_encounters(_read_fixture_csv("encounters.csv"))
 
-    async with SessionFactory() as session:
+    # One transaction for the whole batch: a failure partway through must leave neither
+    # a member without its rows nor some members seeded and others silently dropped.
+    async with app.state.pool.acquire() as conn, conn.transaction():
         result = await seed_population(
-            session, patients, conditions, encounters, body.seed, FIXTURE_PLAN
+            conn, patients, conditions, encounters, body.seed, FIXTURE_PLAN
         )
-        await session.commit()
     return SeedOut.model_validate(result)
