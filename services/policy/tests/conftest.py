@@ -10,7 +10,10 @@ TEST_DATABASE_URL = os.environ.get(
     # A separate database from pramana_policy: db_session rolls back writes but does not
     # isolate reads, so against the real database the uniqueness check in ingest_ncd sees
     # the ingested corpus and skips records the tests expect to insert.
-    "postgresql+asyncpg://pramana:pramana@localhost:5433/pramana_policy_test",
+    # Port 5432 matches docker-compose's ${DB_PORT:-5432} default. It was briefly 5433 while
+    # another project held 5432 on the development machine; that workaround should never have
+    # been committed as the default, because it made the suite depend on a transient condition.
+    "postgresql+asyncpg://pramana:pramana@localhost:5432/pramana_policy_test",
 )
 
 
