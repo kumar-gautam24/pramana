@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import func, select
 
-from policy.cms import parse_ncd_response
+from policy.cms import NcdRecord, parse_ncd_response
 from policy.ingest import ingest_ncd
 from policy.models import Chunk, Policy
 
@@ -68,3 +68,48 @@ async def test_chunks_are_removed_with_their_policy(session):
 
     remaining = (await session.execute(select(func.count()).select_from(Chunk))).scalar_one()
     assert remaining == 0
+
+
+async def test_a_record_with_no_prose_is_skipped_not_stored(session):
+    """A policy with no chunks can never be cited. Storing it anyway would still satisfy
+    the (document_id, document_version) uniqueness check on every later run, so the skip
+    would become permanent -- content CMS attaches to that version afterward would be
+    silently and forever shadowed by the empty row ingested first."""
+    empty = NcdRecord(
+        document_id="999",
+        document_version=1,
+        display_id="999.9",
+        title="Empty Record",
+        effective_from=date(2020, 1, 1),
+        effective_to=None,
+        benefit_category="",
+        sections_html={},
+        source_url="https://example.invalid/999",
+    )
+
+    result = await ingest_ncd(session, StubEmbedder(), [empty])
+
+    assert result.policies_added == 0
+    assert result.chunks_added == 0
+    assert result.skipped == 1
+    assert (await session.execute(select(Policy))).scalar_one_or_none() is None
+
+    # The same document/version, now carrying real content, must still be ingestible --
+    # the earlier skip must not have left behind a row that permanently blocks it.
+    filled = NcdRecord(
+        document_id="999",
+        document_version=1,
+        display_id="999.9",
+        title="Empty Record",
+        effective_from=date(2020, 1, 1),
+        effective_to=None,
+        benefit_category="",
+        sections_html={"other_text": "<p>Some prose worth retrieving.</p>"},
+        source_url="https://example.invalid/999",
+    )
+
+    second = await ingest_ncd(session, StubEmbedder(), [filled])
+
+    assert second.policies_added == 1
+    assert second.chunks_added > 0
+    assert (await session.execute(select(Policy))).scalar_one().document_id == "999"

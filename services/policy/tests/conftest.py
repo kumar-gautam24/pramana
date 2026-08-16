@@ -7,7 +7,10 @@ from policy.models import Base
 
 TEST_DATABASE_URL = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://pramana:pramana@localhost:5433/pramana_policy",
+    # A separate database from pramana_policy: db_session rolls back writes but does not
+    # isolate reads, so against the real database the uniqueness check in ingest_ncd sees
+    # the ingested corpus and skips records the tests expect to insert.
+    "postgresql+asyncpg://pramana:pramana@localhost:5433/pramana_policy_test",
 )
 
 

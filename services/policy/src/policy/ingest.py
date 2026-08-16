@@ -47,6 +47,22 @@ async def ingest_ncd(
             skipped += 1
             continue
 
+        sections = []
+        for field, raw_html in record.sections_html.items():
+            sections.extend(
+                html_to_sections(raw_html, root_heading=SECTION_HEADINGS.get(field, field))
+            )
+
+        chunks = chunk_sections(sections)
+        if not chunks:
+            # A policy with no retrievable text can never be cited, so it is not stored.
+            # Storing it anyway would still pass the (document_id, document_version)
+            # uniqueness check above on every later run, so the skip would become
+            # permanent -- an empty record ingested once would silently and forever
+            # shadow any real content CMS later attaches to that same version.
+            skipped += 1
+            continue
+
         policy = Policy(
             document_id=record.document_id,
             document_version=record.document_version,
@@ -60,16 +76,6 @@ async def ingest_ncd(
         session.add(policy)
         await session.flush()
         policies_added += 1
-
-        sections = []
-        for field, raw_html in record.sections_html.items():
-            sections.extend(
-                html_to_sections(raw_html, root_heading=SECTION_HEADINGS.get(field, field))
-            )
-
-        chunks = chunk_sections(sections)
-        if not chunks:
-            continue
 
         vectors = embedder.encode([c.text for c in chunks])
         for chunk, vector in zip(chunks, vectors, strict=True):

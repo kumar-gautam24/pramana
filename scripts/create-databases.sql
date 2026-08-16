@@ -6,6 +6,13 @@ CREATE DATABASE pramana_adjudication;
 CREATE DATABASE pramana_evals;
 CREATE DATABASE pramana_auth;
 CREATE DATABASE pramana_member;
+-- Separate from pramana_policy so the test suite never shares rows with the real
+-- corpus: the test fixture rolls back writes but does not isolate reads, so running
+-- tests against pramana_policy sees ingested policies and mis-skips them.
+CREATE DATABASE pramana_policy_test;
 
 \connect pramana_policy
+CREATE EXTENSION IF NOT EXISTS vector;
+
+\connect pramana_policy_test
 CREATE EXTENSION IF NOT EXISTS vector;
