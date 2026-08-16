@@ -6,13 +6,11 @@ safe rather than a way to double the corpus."""
 
 from dataclasses import dataclass
 
-from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
-
 from policy.chunking import chunk_sections
 from policy.cms import SECTION_HEADINGS, NcdRecord
-from policy.models import Chunk, Policy
 from policy.parsing import html_to_sections
+from policy.repositories import chunks as chunks_repo
+from policy.repositories import policies as policies_repo
 
 
 @dataclass(frozen=True)
@@ -22,19 +20,14 @@ class IngestResult:
     skipped: int
 
 
-async def ingest_ncd(
-    session: AsyncSession, embedder, records: list[NcdRecord]
-) -> IngestResult:
+async def ingest_ncd(conn, embedder, records: list[NcdRecord]) -> IngestResult:
     policies_added = chunks_added = skipped = 0
 
     for record in records:
-        existing = await session.execute(
-            select(Policy.id).where(
-                Policy.document_id == record.document_id,
-                Policy.document_version == record.document_version,
-            )
+        existing = await policies_repo.find_by_document_version(
+            conn, record.document_id, record.document_version
         )
-        if existing.scalar_one_or_none() is not None:
+        if existing is not None:
             skipped += 1
             continue
 
@@ -45,8 +38,8 @@ async def ingest_ncd(
             # citation reading "reasons_for_denial".
             sections.extend(html_to_sections(raw_html, root_heading=SECTION_HEADINGS[field]))
 
-        chunks = chunk_sections(sections)
-        if not chunks:
+        chunk_records = chunk_sections(sections)
+        if not chunk_records:
             # A policy with no retrievable text can never be cited, so it is not stored.
             # Storing it anyway would still pass the (document_id, document_version)
             # uniqueness check above on every later run, so the skip would become
@@ -55,7 +48,8 @@ async def ingest_ncd(
             skipped += 1
             continue
 
-        policy = Policy(
+        policy = await policies_repo.insert(
+            conn,
             document_id=record.document_id,
             document_version=record.document_version,
             display_id=record.display_id,
@@ -65,22 +59,14 @@ async def ingest_ncd(
             benefit_category=record.benefit_category,
             source_url=record.source_url,
         )
-        session.add(policy)
-        await session.flush()
         policies_added += 1
 
-        vectors = embedder.encode([c.text for c in chunks])
-        for chunk, vector in zip(chunks, vectors, strict=True):
-            session.add(
-                Chunk(
-                    policy_id=policy.id,
-                    ordinal=chunk.ordinal,
-                    heading_path=chunk.heading_path,
-                    text=chunk.text,
-                    embedding=vector,
-                )
-            )
-        chunks_added += len(chunks)
-        await session.flush()
+        vectors = embedder.encode([c.text for c in chunk_records])
+        rows = [
+            (chunk.ordinal, chunk.heading_path, chunk.text, vector)
+            for chunk, vector in zip(chunk_records, vectors, strict=True)
+        ]
+        inserted = await chunks_repo.insert_many(conn, policy.id, rows)
+        chunks_added += len(inserted)
 
     return IngestResult(policies_added, chunks_added, skipped)

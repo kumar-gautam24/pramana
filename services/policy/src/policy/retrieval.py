@@ -8,11 +8,11 @@ from collections import defaultdict
 from datetime import date
 
 from pramana_common.schemas import Hit
-from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from policy.dating import in_force_on
-from policy.models import Chunk, Policy
+from policy.models import Policy
+from policy.repositories import chunks as chunks_repo
+from policy.repositories import policies as policies_repo
 
 #: How many chunks survive fusion into reranking. Wider costs latency; narrower drops
 #: documents the cross-encoder would have promoted.
@@ -34,20 +34,21 @@ def reciprocal_rank_fusion(
     return sorted(scores.items(), key=lambda pair: (-pair[1], pair[0]))
 
 
-async def _governing_policy_ids(session: AsyncSession, on: date) -> list[int]:
+async def _governing_policy_ids(conn, on: date) -> list[int]:
     """The policy ids in force on `on`, resolved from every version -- not just the ones
     that happen to survive retrieval.
 
     Resolving after the candidate cut would let an un-retrieved version silently hand
     governance to a superseded one: if the current version's chunks never made the top
     `CANDIDATES`, `in_force_on` would see only stale versions and declare one of them the
-    winner. Querying the (tiny) policies table directly avoids that.
+    winner. Fetching the (tiny) policies table directly avoids that.
 
     Versions of one document are grouped by `document_id`, the key the corpus is unique
-    on -- see the `(document_id, document_version)` constraint on Policy. `display_id` is
-    the human label and CMS renumbers it across revisions, so grouping by it would split
-    one document's history into two lineages and let both of them govern the same date."""
-    policies = (await session.execute(select(Policy))).scalars().all()
+    on -- see the `(document_id, document_version)` constraint in
+    migrations/0001_policies_and_chunks.sql. `display_id` is the human label and CMS
+    renumbers it across revisions, so grouping by it would split one document's history
+    into two lineages and let both of them govern the same date."""
+    policies = await policies_repo.fetch_all(conn)
     by_document: dict[str, list[Policy]] = defaultdict(list)
     for policy in policies:
         by_document[policy.document_id].append(policy)
@@ -56,41 +57,8 @@ async def _governing_policy_ids(session: AsyncSession, on: date) -> list[int]:
     return [winner.id for winner in winners if winner is not None]
 
 
-async def _dense(
-    session: AsyncSession,
-    vector: list[float],
-    limit: int,
-    policy_ids: list[int] | None,
-) -> list[int]:
-    stmt = select(Chunk.id).order_by(Chunk.embedding.cosine_distance(vector)).limit(limit)
-    if policy_ids is not None:
-        stmt = stmt.where(Chunk.policy_id.in_(policy_ids))
-    rows = await session.execute(stmt)
-    return list(rows.scalars())
-
-
-async def _lexical(
-    session: AsyncSession,
-    query: str,
-    limit: int,
-    policy_ids: list[int] | None,
-) -> list[int]:
-    """Catches exact tokens like "AHI" and "Type IV" that embeddings blur."""
-    tsquery = func.plainto_tsquery("english", query)
-    stmt = (
-        select(Chunk.id)
-        .where(Chunk.tsv.op("@@")(tsquery))
-        .order_by(func.ts_rank(Chunk.tsv, tsquery).desc())
-        .limit(limit)
-    )
-    if policy_ids is not None:
-        stmt = stmt.where(Chunk.policy_id.in_(policy_ids))
-    rows = await session.execute(stmt)
-    return list(rows.scalars())
-
-
 async def search(
-    session: AsyncSession,
+    conn,
     embedder,
     reranker,
     query: str,
@@ -102,32 +70,26 @@ async def search(
     # dominating that cut must not be able to pass itself off as governing.
     policy_ids: list[int] | None = None
     if on is not None:
-        policy_ids = await _governing_policy_ids(session, on)
+        policy_ids = await _governing_policy_ids(conn, on)
         if not policy_ids:
             return []
 
     vector = embedder.encode([query])[0]
     fused = reciprocal_rank_fusion(
         [
-            await _dense(session, vector, CANDIDATES, policy_ids),
-            await _lexical(session, query, CANDIDATES, policy_ids),
+            await chunks_repo.dense_search(conn, vector, CANDIDATES, policy_ids),
+            await chunks_repo.lexical_search(conn, query, CANDIDATES, policy_ids),
         ]
     )
     ids = [chunk_id for chunk_id, _ in fused[:CANDIDATES]]
     if not ids:
         return []
 
-    rows = (
-        await session.execute(
-            select(Chunk, Policy)
-            .join(Policy, Chunk.policy_id == Policy.id)
-            .where(Chunk.id.in_(ids))
-            # Rerank scores tie, and the sort below is stable, so without an explicit
-            # order the surviving hit would be whichever row Postgres happened to return
-            # first. Cited evidence has to be the same on every run -- CLAUDE.md 7.
-            .order_by(Chunk.id)
-        )
-    ).all()
+    # Rerank scores tie, and the sort below is stable, so without the repository's
+    # explicit ORDER BY chunks.id the surviving hit would be whichever row Postgres
+    # happened to return first. Cited evidence has to be the same on every run --
+    # CLAUDE.md 7.
+    rows = await chunks_repo.fetch_with_policies(conn, ids)
     if not rows:
         return []
 

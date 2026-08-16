@@ -6,36 +6,42 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pramana_common.schemas import Hit
 from pydantic import BaseModel, Field
-from sqlalchemy import text
 
+from policy import db
 from policy.cms import fetch_ncd
 from policy.config import get_settings
-from policy.db import SessionFactory, engine
 from policy.embedding import Embedder, Reranker
 from policy.ingest import ingest_ncd
 from policy.retrieval import CANDIDATES, search
 
 
 async def _probe_database() -> None:
-    """The cheapest query that proves the configured URL reaches a database that answers.
-    Raises whatever the driver raises, so startup fails with the real cause."""
-    async with engine.connect() as connection:
-        await connection.execute(text("SELECT 1"))
+    """The cheapest query that proves the configured DATABASE_URL reaches a database
+    that answers. A dedicated, throwaway pool -- not app.state.pool -- so this check
+    behaves the same whether or not the app has finished, or even started, its own
+    bootstrap; that is what makes it usable from both the lifespan and /ready."""
+    probe_pool = await db.pool()
+    try:
+        await db.probe(probe_pool)
+    finally:
+        await probe_pool.close()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Probed before the models, because this is the cheap check and the one that fails:
-    # building the engine opens no connection, so a wrong DATABASE_URL stays invisible
+    # pool() opens no connection (min_size=0), so a wrong DATABASE_URL stays invisible
     # until a query runs. This is what makes misconfiguration a startup failure instead
     # of a 500 on the first search.
     await _probe_database()
+    app.state.pool = await db.pool()
 
     # Loading the model costs seconds. Paying it at startup keeps it off the first
     # caller's timeout, which is where it would otherwise land.
     app.state.embedder = Embedder()
     app.state.reranker = Reranker()
     yield
+    await app.state.pool.close()
 
 
 app = FastAPI(title="pramana policy", lifespan=lifespan)
@@ -88,9 +94,10 @@ async def ingest(request: IngestRequest) -> dict[str, int]:
     ) as client:
         records = await fetch_ncd(client, request.ncd_id)
 
-    async with SessionFactory() as session:
-        result = await ingest_ncd(session, app.state.embedder, records)
-        await session.commit()
+    # One transaction for the whole batch: a failure partway through must leave neither
+    # a policy without its chunks nor some records ingested and others silently dropped.
+    async with app.state.pool.acquire() as conn, conn.transaction():
+        result = await ingest_ncd(conn, app.state.embedder, records)
 
     return {
         "policies_added": result.policies_added,
@@ -101,9 +108,9 @@ async def ingest(request: IngestRequest) -> dict[str, int]:
 
 @app.post("/search")
 async def search_endpoint(request: SearchRequest) -> list[Hit]:
-    async with SessionFactory() as session:
+    async with app.state.pool.acquire() as conn:
         return await search(
-            session,
+            conn,
             app.state.embedder,
             app.state.reranker,
             request.query,
