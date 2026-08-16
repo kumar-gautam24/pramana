@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -45,7 +46,7 @@ async def db_session(db_pool):
 
 class _SingleConnectionPool:
     """Stands in for `app.state.pool` so a route function can be called directly
-    (`await main.coverage(...)`) and see rows `db_session` inserted, without a route
+    (`await members.coverage(...)`) and see rows `db_session` inserted, without a route
     test ever touching the real database. `acquire()` hands back the one connection
     this fixture already opened -- the same seam `main.SessionFactory` monkeypatching
     used to give a route function the test's own rolled-back transaction, before that
@@ -78,3 +79,14 @@ async def routed_session(db_pool, monkeypatch):
             yield connection
         finally:
             await transaction.rollback()
+
+
+@pytest.fixture
+def fake_request(routed_session):
+    """A stand-in for FastAPI's `Request` with just enough shape (`.app.state.pool`) for
+    a router function pulled out of the app's dependency injection to resolve its pool
+    the same way it would inside a real request. Depends on `routed_session` so the pool
+    it exposes is already the rolled-back, single-connection one patched above."""
+    from member.main import app
+
+    return SimpleNamespace(app=app)

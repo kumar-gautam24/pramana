@@ -2,7 +2,7 @@ from datetime import date
 
 import pytest
 
-from member.notes import BENEFIT_INDICATORS, SYMPTOMS, generate_note
+from member.domain.notes import BENEFIT_INDICATORS, SYMPTOMS, generate_note
 
 WHEN = date(2026, 1, 5)
 

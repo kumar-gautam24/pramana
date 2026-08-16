@@ -2,11 +2,12 @@ from datetime import date, timedelta
 
 import pytest
 
-import member.notes as notes_module
-from member.notes import BENEFIT_INDICATORS
+import member.domain.notes as notes_module
+from member.domain.notes import BENEFIT_INDICATORS
+from member.domain.synthea import SyntheaCondition, SyntheaEncounter, SyntheaPatient
 from member.repositories import notes as notes_repo
 from member.repositories import sleep_studies as sleep_studies_repo
-from member.seed import (
+from member.services.seed import (
     FOLLOW_UP_DATE,
     STUDY_DATE,
     USAGE_NIGHTS,
@@ -14,7 +15,6 @@ from member.seed import (
     MemberPlan,
     seed_population,
 )
-from member.synthea import SyntheaCondition, SyntheaEncounter, SyntheaPatient
 
 PATIENTS = [
     SyntheaPatient(id="s1", birth_date=date(1970, 1, 1), sex="F"),

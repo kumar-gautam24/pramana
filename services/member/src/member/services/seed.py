@@ -12,20 +12,20 @@ reports zeros rather than restating the population's total size.
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from member.generate import (
+from member.domain.generate import (
     STUDY_TARGETS,
     USAGE_TARGETS,
     generate_sleep_profile,
     generate_usage_nights,
 )
-from member.notes import generate_note
+from member.domain.notes import generate_note
+from member.domain.synthea import SyntheaCondition, SyntheaEncounter, SyntheaPatient
 from member.repositories import conditions as conditions_repo
 from member.repositories import cpap_usage as cpap_usage_repo
 from member.repositories import encounters as encounters_repo
 from member.repositories import members as members_repo
 from member.repositories import notes as notes_repo
 from member.repositories import sleep_studies as sleep_studies_repo
-from member.synthea import SyntheaCondition, SyntheaEncounter, SyntheaPatient
 
 #: Every seeded member gets the same wide-open window: this population exists to be
 #: adjudicated against dates the generators below choose, not to exercise coverage

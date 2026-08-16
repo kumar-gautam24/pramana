@@ -1,8 +1,8 @@
 """Raw SQL for the `notes` table.
 
-Named `member.repositories.notes` to keep it distinct from `member.notes`, the note-text
-generator -- callers import both under a qualified name (`notes_repo` / `notes_module`),
-never bare, so the two never collide."""
+Named `member.repositories.notes` to keep it distinct from `member.domain.notes`, the
+note-text generator -- callers import both under a qualified name (`notes_repo` /
+`notes_module`), never bare, so the two never collide."""
 
 from datetime import date
 
@@ -42,7 +42,8 @@ async def insert(
 
 async def notes_before(conn, member_id: str, on: date) -> list[Note]:
     """Notes on or before `on`, for the symptom-documentation judgment call the model
-    still has to make (see member.notes) -- this only bounds which notes are in scope."""
+    still has to make (see member.domain.notes) -- this only bounds which notes are in
+    scope."""
     rows = await conn.fetch(
         f"SELECT {_COLUMNS} FROM notes WHERE member_id = $1 AND date <= $2 ORDER BY date",
         member_id,

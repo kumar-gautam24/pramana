@@ -17,7 +17,8 @@ class Adherence:
 
 async def insert_many(conn, member_id: str, nights: list[tuple[date, float]]) -> int:
     """One executemany, not a RETURNING insert per row: unlike chunks (policy), nothing
-    downstream needs the inserted rows back, only a count (see member.seed.SeedResult)."""
+    downstream needs the inserted rows back, only a count (see
+    member.services.seed.SeedResult)."""
     await conn.executemany(
         "INSERT INTO cpap_usage (member_id, night, hours) VALUES ($1, $2, $3)",
         [(member_id, night, hours) for night, hours in nights],

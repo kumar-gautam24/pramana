@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from member.synthea import parse_conditions, parse_encounters, parse_patients
+from member.domain.synthea import parse_conditions, parse_encounters, parse_patients
 
 FIXTURES = Path(__file__).parent / "fixtures" / "synthea"
 
