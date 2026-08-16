@@ -46,18 +46,23 @@ def test_no_chunk_exceeds_the_limit():
     assert all(len(c.text) <= 500 for c in chunks)
 
 
-def test_splits_overlap_so_a_criterion_is_not_cut_in_half():
+def test_splits_overlap_so_adjacent_chunks_share_text():
     """A numeric criterion sitting on a split boundary would otherwise appear in neither
-    chunk in full, and retrieval would never score it."""
-    text = (
-        "A. " + ("filler " * 100) + "AHI greater than or equal to 15 events per hour. "
-        + ("tail " * 100)
-    )
-    sections = [Section(heading_path="Root > D", text=text)]
+    chunk in full, and retrieval would never score it. Overlap is what prevents that: the
+    tail of one chunk is carried into the next, so adjacent chunks share literal text.
+    Sentence-boundary splitting alone (with no overlap) keeps every sentence whole but
+    shares nothing across chunks -- this test fails if the carry-forward is removed."""
+    sentences = [f"Sentence number {i} about coverage." for i in range(60)]
+    sections = [Section(heading_path="Root > D", text=" ".join(sentences))]
 
-    chunks = chunk_sections(sections, max_chars=400, overlap_chars=200)
+    chunks = chunk_sections(sections, max_chars=300, overlap_chars=100)
 
-    assert any("15 events per hour" in c.text for c in chunks)
+    assert len(chunks) > 1
+    shared_sentences = [
+        set(chunks[i].text.split(". ")) & set(chunks[i + 1].text.split(". "))
+        for i in range(len(chunks) - 1)
+    ]
+    assert any(shared_sentences)
 
 
 def test_empty_input_produces_no_chunks():

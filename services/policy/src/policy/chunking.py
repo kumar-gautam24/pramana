@@ -29,8 +29,12 @@ def _split(text: str, max_chars: int, overlap_chars: int) -> list[str]:
     for sentence in _SENTENCE_END.split(text):
         if length + len(sentence) + 1 > max_chars and window:
             pieces.append(" ".join(window))
-            # Carry the tail of the window forward so a criterion sitting on the boundary
-            # appears whole in at least one chunk.
+            # Sentences are never split here, so a criterion contained in one sentence is
+            # always whole regardless of overlap. What overlap adds on top is cross-sentence
+            # context: up to overlap_chars of the preceding sentences is carried into the
+            # next chunk, but only for as long as each one still fits the budget -- a
+            # boundary sentence longer than overlap_chars carries nothing, and the next
+            # chunk starts clean rather than exceeding max_chars to force it in.
             carried: list[str] = []
             carried_len = 0
             for previous in reversed(window):
