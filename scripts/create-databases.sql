@@ -10,6 +10,7 @@ CREATE DATABASE pramana_member;
 -- corpus: the test fixture rolls back writes but does not isolate reads, so running
 -- tests against pramana_policy sees ingested policies and mis-skips them.
 CREATE DATABASE pramana_policy_test;
+CREATE DATABASE pramana_member_test;
 
 \connect pramana_policy
 CREATE EXTENSION IF NOT EXISTS vector;

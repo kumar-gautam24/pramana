@@ -51,6 +51,17 @@ services:
       db:
         condition: service_healthy
 
+  member:
+    build:
+      context: .
+      dockerfile: services/member/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pramana:pramana@db:5432/pramana_member
+    ports: ["${MEMBER_PORT:-8005}:8005"]
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:
