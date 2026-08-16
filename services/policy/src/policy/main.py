@@ -5,7 +5,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pramana_common.schemas import Hit
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import text
 
 from policy.cms import fetch_ncd
@@ -13,7 +13,7 @@ from policy.config import get_settings
 from policy.db import SessionFactory, engine
 from policy.embedding import Embedder, Reranker
 from policy.ingest import ingest_ncd
-from policy.retrieval import search
+from policy.retrieval import CANDIDATES, search
 
 
 async def _probe_database() -> None:
@@ -48,7 +48,10 @@ class IngestRequest(BaseModel):
 class SearchRequest(BaseModel):
     query: str
     date_of_service: date | None = None
-    limit: int = 5
+    #: Bounded rather than free: a negative limit slices the ranked list from the end and
+    #: quietly returns near-everything, and a limit above CANDIDATES promises more hits
+    #: than fusion ever produces. Rejecting is better than answering something else.
+    limit: int = Field(default=5, ge=1, le=CANDIDATES)
 
 
 @app.get("/health")

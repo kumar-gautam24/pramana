@@ -70,3 +70,12 @@ def test_startup_fails_when_the_database_is_unreachable(monkeypatch):
 
     with pytest.raises(OSError), TestClient(app):
         pass
+
+
+@pytest.mark.parametrize("limit", [0, -1, 21, 100])
+def test_search_rejects_a_limit_outside_the_candidate_window(client, limit):
+    """Unvalidated, a negative limit slices the ranked list from the end and returns
+    nearly everything, and an oversized one promises more hits than fusion produces."""
+    response = client.post("/search", json={"query": "AHI", "limit": limit})
+
+    assert response.status_code == 422
