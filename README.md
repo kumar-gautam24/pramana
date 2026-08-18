@@ -9,9 +9,15 @@ approves what it can prove, and it cannot deny anything.**
 ---
 
 **Status: in development.** The design is complete and approved
-([`docs/specs`](docs/specs/2026-08-15-pramana-design.md)); the implementation has not started.
+([`docs/specs`](docs/specs/2026-08-15-pramana-design.md)). Two of the seven services are
+built — `policy` (CMS corpus ingest, chunking, pgvector retrieval) and `member` (Synthea-derived
+population, clinical record repositories) — along with the shared `packages/common`, the
+migration runner, and 192 tests. `adjudication`, `evals`, `gateway`, `auth` and the reviewer
+console are specified but not yet implemented.
+
 This README describes what is being built, and will be replaced with measured results as they
-exist. No number appears here until a script produces it.
+exist. No number appears here until a script produces it — which is why the accuracy and cost
+figures this project exists to report are absent rather than estimated.
 
 ## The problem
 
