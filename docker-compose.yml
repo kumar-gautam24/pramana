@@ -62,6 +62,21 @@ services:
       db:
         condition: service_healthy
 
+  adjudication:
+    build:
+      context: .
+      dockerfile: services/adjudication/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pramana:pramana@db:5432/pramana_adjudication
+      REDIS_URL: redis://:${REDIS_PASSWORD:-dev-redis-password}@redis:6379
+      POLICY_URL: http://policy:8001
+      MEMBER_URL: http://member:8005
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:14b-instruct}
+    ports: ["${ADJUDICATION_PORT:-8002}:8002"]
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:

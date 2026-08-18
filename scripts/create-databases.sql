@@ -11,6 +11,7 @@ CREATE DATABASE pramana_member;
 -- tests against pramana_policy sees ingested policies and mis-skips them.
 CREATE DATABASE pramana_policy_test;
 CREATE DATABASE pramana_member_test;
+CREATE DATABASE pramana_adjudication_test;
 
 \connect pramana_policy
 CREATE EXTENSION IF NOT EXISTS vector;
