@@ -20,6 +20,7 @@ import asyncpg
 
 from member.config import get_settings
 
+
 class MigrationError(Exception):
     """Recorded migration history and the migrations/ directory disagree. Raised
     instead of guessing which one is right, because guessing is exactly how
