@@ -114,6 +114,12 @@ event log. Within that, choose the simplest thing that works.
 Simple is not the same as small. `case_events` being append-only is simple; a mutable status
 column that six code paths update is not, however few lines it takes.
 
+**The lint gate is `uv run ruff check .`, and only that.** `ruff format` is deliberately not
+used and never has been — it would reformat nine files in `policy` and eleven in `member`,
+because the line breaks in them were chosen by hand to keep a long SQL string or an f-string
+readable. If `ruff format --check` reports files, that is not debt to pay down. Do not run it,
+and do not reformat a file you are otherwise editing.
+
 ## Commands
 
 ```bash
