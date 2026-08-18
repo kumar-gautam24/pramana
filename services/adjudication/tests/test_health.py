@@ -18,7 +18,6 @@ from adjudication.main import app
 #: A parseable URL whose port nothing listens on, so connecting fails fast and offline.
 UNREACHABLE_DATABASE_URL = "postgresql+asyncpg://pramana:pramana@127.0.0.1:1/pramana_adjudication"
 
-REACHABLE_DATABASE_URL = "postgresql+asyncpg://pramana:pramana@localhost:5432/pramana_adjudication"
 
 
 @pytest.fixture
@@ -43,10 +42,6 @@ def _unreachable_settings() -> Settings:
     return _settings(UNREACHABLE_DATABASE_URL)
 
 
-def _reachable_settings() -> Settings:
-    return _settings(REACHABLE_DATABASE_URL)
-
-
 def test_health_reports_ok(client):
     """Liveness answers without resolving Settings or touching the database -- that is
     what makes it usable as a liveness probe."""
@@ -69,8 +64,8 @@ def test_ready_is_unready_when_the_database_is_unreachable(monkeypatch, client):
     assert response.json()["reason"] == "database"
 
 
-def test_ready_reports_ready_when_the_database_answers(monkeypatch, client):
-    monkeypatch.setattr(db, "get_settings", _reachable_settings)
+def test_ready_reports_ready_when_the_database_answers(monkeypatch, client, database_url):
+    monkeypatch.setattr(db, "get_settings", lambda: _settings(database_url))
 
     response = client.get("/ready")
 
@@ -88,8 +83,8 @@ def test_startup_fails_when_the_database_is_unreachable(monkeypatch):
         pass
 
 
-def test_startup_succeeds_when_the_database_is_reachable(monkeypatch):
-    monkeypatch.setattr(db, "get_settings", _reachable_settings)
+def test_startup_succeeds_when_the_database_is_reachable(monkeypatch, database_url):
+    monkeypatch.setattr(db, "get_settings", lambda: _settings(database_url))
 
     with TestClient(app) as client:
         response = client.get("/health")

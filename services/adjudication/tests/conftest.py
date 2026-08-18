@@ -17,6 +17,17 @@ TEST_DATABASE_DSN = os.environ.get(
 
 
 @pytest.fixture(scope="session")
+def database_url() -> str:
+    """The same database as `db_pool`, in the scheme `Settings.database_url` carries.
+
+    Exposed as a fixture rather than left for each test to spell out, because a test that
+    writes its own connection string writes the *real* database's name as often as not --
+    and a test reading state it never inserted is the failure this suite is arranged to
+    prevent. Going through here means the TEST_DATABASE_DSN override moves every test."""
+    return TEST_DATABASE_DSN.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+
+@pytest.fixture(scope="session")
 async def db_pool():
     """Migrations run once per test session, not per test: they are schema, not the data
     a test owns, so they are not part of what db_session rolls back below.
