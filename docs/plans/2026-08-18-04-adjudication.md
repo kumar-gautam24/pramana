@@ -204,6 +204,15 @@ Update `.workspace/STATE.md`, `JOURNAL.md`, `ERRORS.md` with real counts and any
 
 ## Deferred out of this plan, with an owner
 
+- **No model is available on the development machine.** Ollama is not installed and
+  nothing answers on 11434, so two things in this plan cannot be done as written. Task 5's
+  fixture is **hand-authored, not recorded** — it must say so in the file itself, because a
+  fixture labelled "recorded" that nobody recorded is worse than no fixture. And ADR-0010's
+  startup guard ("services refuse to start if the configured model cannot produce
+  schema-constrained output") is **not implemented in Task 5**: it would make the service
+  unbootable here, and nothing before Task 8 calls a model. **Task 8 owns the guard.**
+  Task 9's end-to-end run needs a real model and is blocked until one is installed.
+
 - **`reviews.outcome` is deliberately unconstrained.** Unlike `determinations.outcome`,
   a clinician's review *can* be a denial — that separation is the whole reason the two
   tables are distinct. But "can be a denial" is not the same as "can be any string", and
