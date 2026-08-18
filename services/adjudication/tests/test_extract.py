@@ -44,13 +44,14 @@ def _threshold_criterion(chunk_id: int = 58) -> dict:
 # --- the well-formed fixture ----------------------------------------------------------
 
 
-async def test_well_formed_fixture_extracts_three_sets():
+async def test_well_formed_fixture_extracts_four_sets():
     sets = await extract(StubLLM(RAW_RESPONSE), HITS)
 
-    assert [s.ordinal for s in sets] == [1, 2, 3]
+    assert [s.ordinal for s in sets] == [1, 2, 3, 4]
     assert len(sets[0].criteria) == 2
     assert len(sets[1].criteria) == 4
     assert len(sets[2].criteria) == 4
+    assert len(sets[3].criteria) == 2
 
 
 async def test_well_formed_fixture_assigns_zero_indexed_ordinals_within_a_set():
@@ -73,6 +74,21 @@ async def test_well_formed_fixture_covers_threshold_enum_and_judgment_types():
 
     types = {c.type for s in sets for c in s.criteria}
     assert types == {CriterionType.ENUM, CriterionType.THRESHOLD, CriterionType.JUDGMENT}
+
+
+async def test_well_formed_fixture_carries_fact_args_for_the_adherence_criterion():
+    """Fix round 1: the continuation set's adherence criterion is the thing that
+    proved the params contract couldn't represent NCD 240.4's own headline
+    continuation rule without `fact_args` -- this pins the fixed shape down."""
+    sets = await extract(StubLLM(RAW_RESPONSE), HITS)
+
+    continuation_set = sets[3]
+    adherence_criterion = next(
+        c for c in continuation_set.criteria if c.type is CriterionType.THRESHOLD
+    )
+
+    assert adherence_criterion.params["fact"] == "adherence_fraction"
+    assert adherence_criterion.params["fact_args"] == {"min_hours": 4.0, "window_days": 30}
 
 
 async def test_well_formed_fixture_parses_into_what_criteria_sets_aggregate_consumes():

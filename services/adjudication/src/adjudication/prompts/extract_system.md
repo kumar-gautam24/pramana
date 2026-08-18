@@ -49,6 +49,18 @@ list -- these are the only facts the member record can answer a question about:
 A condition that does not reduce to one of these facts, and is not a `judgment`
 criterion either, cannot be checked by this system. Do not emit it.
 
+Some facts cannot be looked up on their own -- they need extra arguments, which you
+must supply as a nested `fact_args` object inside `params`:
+
+{fact_args}
+
+A criterion naming one of those facts without the matching `fact_args` cannot be
+checked, and a criterion naming any other fact must not include `fact_args` at all.
+Read these values from the policy text itself (e.g. "at least 4 hours per night on
+70% of nights within a 30-day period" gives `min_hours: 4`, `window_days: 30`, and the
+70% becomes the criterion's own `value`) -- never invent a number the text does not
+state.
+
 ## Output
 
 Respond with JSON matching the provided schema exactly: `{{"sets": [{{"criteria":

@@ -20,6 +20,7 @@ from pramana_common.schemas import Hit
 from pydantic import BaseModel, ValidationError
 
 from adjudication.domain.params import (
+    FACT_ARGS,
     FACTS,
     TEMPORAL_OPERATORS,
     THRESHOLD_OPERATORS,
@@ -88,12 +89,21 @@ class ExtractedSet:
     criteria: tuple[ExtractedCriterion, ...]
 
 
+def _describe_fact_args() -> str:
+    lines = []
+    for fact, args in sorted(FACT_ARGS.items()):
+        shape = ", ".join(f'"{key}": <{typ.__name__}>' for key, typ in args.items())
+        lines.append(f"- {fact}: {{{shape}}}")
+    return "\n".join(lines)
+
+
 def _build_system_prompt() -> str:
     return _SYSTEM_PROMPT_TEMPLATE.format(
         criterion_types=[t.value for t in CriterionType],
         threshold_operators=sorted(THRESHOLD_OPERATORS),
         temporal_operators=sorted(TEMPORAL_OPERATORS),
         facts=", ".join(sorted(FACTS)),
+        fact_args=_describe_fact_args(),
     )
 
 

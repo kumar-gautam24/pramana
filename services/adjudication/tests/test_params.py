@@ -139,6 +139,123 @@ def test_judgment_rejects_any_params():
         validate_params(CriterionType.JUDGMENT, {"fact": "ahi"})
 
 
+# --- fact_args: facts the member service cannot answer without extra arguments --------
+#
+# Fix round 1. `MemberClient.adherence(member_id, start, end, min_hours)` needs a
+# window and a nightly-hours bar before it will answer at all, and `min_hours` has
+# no default on that endpoint deliberately -- the bar is the policy's number, not
+# the member service's. Without `fact_args`, a verifier would have had to hardcode
+# it, which is exactly the per-policy hardcoding invariant 3 forbids. Both rejection
+# directions matter equally: a fact that needs args and doesn't get them is
+# unusable, and a fact that doesn't need args but gets them anyway means the model
+# can attach keys nothing reads.
+
+
+def test_threshold_adherence_fact_accepts_well_formed_fact_args():
+    validate_params(
+        CriterionType.THRESHOLD,
+        {
+            "fact": "adherence_fraction",
+            "operator": ">=",
+            "value": 0.7,
+            "fact_args": {"min_hours": 4.0, "window_days": 30},
+        },
+    )
+
+
+def test_threshold_adherence_fact_without_fact_args_is_rejected():
+    """The hardcoding hole this fix closes: a criterion naming `adherence_fraction`
+    (or `adherence_nights`) has no way to say which nightly-hours bar or window it
+    means without `fact_args` -- omitting it must not silently pass, or Task 6's
+    verifier would be forced to invent a default the policy never stated."""
+    with pytest.raises(ExtractionInvalid):
+        validate_params(
+            CriterionType.THRESHOLD,
+            {"fact": "adherence_fraction", "operator": ">=", "value": 0.7},
+        )
+
+
+def test_threshold_non_adherence_fact_with_fact_args_is_rejected():
+    """The other direction: a fact that doesn't need arguments must not be allowed
+    to carry them anyway, or the model could attach arbitrary keys nothing reads."""
+    with pytest.raises(ExtractionInvalid):
+        validate_params(
+            CriterionType.THRESHOLD,
+            {
+                "fact": "ahi",
+                "operator": ">=",
+                "value": 15,
+                "fact_args": {"min_hours": 4.0, "window_days": 30},
+            },
+        )
+
+
+def test_adherence_fact_args_rejects_missing_key():
+    with pytest.raises(ExtractionInvalid):
+        validate_params(
+            CriterionType.THRESHOLD,
+            {
+                "fact": "adherence_nights",
+                "operator": ">=",
+                "value": 21,
+                "fact_args": {"min_hours": 4.0},  # window_days missing
+            },
+        )
+
+
+def test_adherence_fact_args_rejects_extra_key():
+    with pytest.raises(ExtractionInvalid):
+        validate_params(
+            CriterionType.THRESHOLD,
+            {
+                "fact": "adherence_nights",
+                "operator": ">=",
+                "value": 21,
+                "fact_args": {"min_hours": 4.0, "window_days": 30, "unit": "hours"},
+            },
+        )
+
+
+def test_adherence_fact_args_rejects_non_positive_min_hours():
+    with pytest.raises(ExtractionInvalid):
+        validate_params(
+            CriterionType.THRESHOLD,
+            {
+                "fact": "adherence_fraction",
+                "operator": ">=",
+                "value": 0.7,
+                "fact_args": {"min_hours": 0, "window_days": 30},
+            },
+        )
+
+
+def test_adherence_fact_args_rejects_non_integer_window_days():
+    with pytest.raises(ExtractionInvalid):
+        validate_params(
+            CriterionType.THRESHOLD,
+            {
+                "fact": "adherence_fraction",
+                "operator": ">=",
+                "value": 0.7,
+                "fact_args": {"min_hours": 4.0, "window_days": 30.5},
+            },
+        )
+
+
+def test_enum_fact_with_fact_args_is_rejected():
+    """Same rule, checked against a different `CriterionType` -- `fact_args`
+    validity is driven by the fact named, not by which type carries it."""
+    with pytest.raises(ExtractionInvalid):
+        validate_params(
+            CriterionType.ENUM,
+            {
+                "fact": "test_type",
+                "allowed": ["home_type_iv"],
+                "fact_args": {"min_hours": 4.0, "window_days": 30},
+            },
+        )
+
+
 # --- the vocabulary itself, against member_client -------------------------------------
 
 
