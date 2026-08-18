@@ -27,13 +27,20 @@ from pathlib import Path
 def _service_db_module():
     """Imported from whichever service's directory this is run in, so the script stays
     a thin entry point rather than a third copy of the runner."""
+    failures = {}
     for name in ("policy", "member"):
         try:
             return importlib.import_module(f"{name}.db")
-        except ModuleNotFoundError:
-            continue
+        except ModuleNotFoundError as error:
+            # Distinguish "this is not that service's directory" from "that service is
+            # here but one of its own imports is broken". Swallowing the second reports
+            # the wrong problem entirely, and it is the one that actually needs fixing.
+            if error.name not in (name, f"{name}.db"):
+                raise
+            failures[name] = str(error)
     print(
-        "no service package importable -- run this from inside services/<name>",
+        "no service package importable -- run this from inside services/<name>. "
+        f"Tried: {failures}",
         file=sys.stderr,
     )
     raise SystemExit(2)

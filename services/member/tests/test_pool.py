@@ -1,6 +1,6 @@
 """pool() and probe() are the startup-time checks ADR-0013 requires to survive the
 switch away from SQLAlchemy: a bad DATABASE_URL must fail before the service accepts
-traffic, same invariant test_health.py exercises for the SQLAlchemy engine today."""
+traffic, the invariant that survived the switch away from SQLAlchemy unchanged."""
 
 import uuid
 

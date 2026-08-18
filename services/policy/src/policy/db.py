@@ -88,6 +88,21 @@ async def probe_fresh() -> None:
     fresh = await pool()
     try:
         await probe(fresh)
+    except ValueError as error:
+        # min_size=0 means pool() opens nothing, so the codec registration this pool does
+        # on connect first runs here. It needs the extension migration 0001 creates, and
+        # without this an unmigrated database fails with a bare "unknown type:
+        # public.vector" that names neither the cause nor the fix.
+        if "vector" not in str(error):
+            raise
+        raise RuntimeError(
+            "the policy database has no `vector` extension, so its migrations have not "
+            "been run. Apply them first:\n"
+            "  cd services/policy && uv run python ../../scripts/migrate.py "
+            "postgresql://<user>:<password>@<host>:<port>/<database> migrations\n"
+            "If the database already has the schema but predates ADR-0013, use "
+            "scripts/adopt_migrations.py instead."
+        ) from error
     finally:
         await fresh.close()
 

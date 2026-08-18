@@ -12,7 +12,7 @@ approves what it can prove, and it cannot deny anything.**
 ([`docs/specs`](docs/specs/2026-08-15-pramana-design.md)). Two of the seven services are
 built — `policy` (CMS corpus ingest, chunking, pgvector retrieval) and `member` (Synthea-derived
 population, clinical record repositories) — along with the shared `packages/common`, the
-migration runner, and 192 tests. `adjudication`, `evals`, `gateway`, `auth` and the reviewer
+migration runner, and 229 tests. `adjudication`, `evals`, `gateway`, `auth` and the reviewer
 console are specified but not yet implemented.
 
 This README describes what is being built, and will be replaced with measured results as they

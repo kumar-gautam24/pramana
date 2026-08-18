@@ -4,11 +4,13 @@
 nothing about the URL. `probe()` is what makes a wrong DATABASE_URL a startup failure
 rather than a 500 on the first query -- see the lifespan in main.py.
 
-This file intentionally duplicates services/member/src/member/db.py rather than sharing
+This file intentionally duplicates services/policy/src/policy/db.py rather than sharing
 it from packages/common: a migration runner is infrastructure, not a wire contract, and
-packages/common is reserved for the latter. Two small files that can diverge (this one
-registers the vector codec member never needs) beat a shared dependency that would couple
-the two services' deploy cycles for no gain."""
+packages/common is reserved for the latter. Two small files that can diverge beat a shared
+dependency that would couple the two services' deploy cycles for no gain. They have already
+diverged: policy registers the pgvector codec on every connection and therefore needs a
+second, codec-free pool to migrate a database that has not yet created the extension. This
+service stores no vectors, so its one pool serves both purposes."""
 
 
 import hashlib
@@ -17,8 +19,6 @@ from pathlib import Path
 import asyncpg
 
 from member.config import get_settings
-
-# Unused (see module docstring) -- kept only because removing it is Task 6's job.
 
 class MigrationError(Exception):
     """Recorded migration history and the migrations/ directory disagree. Raised

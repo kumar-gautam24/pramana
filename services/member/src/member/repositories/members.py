@@ -64,7 +64,7 @@ async def coverage_active(conn, member_id: str, on: date) -> bool:
     Both bounds are inclusive: a member whose coverage ends on `on` was still covered
     that day, so `coverage_end < on` (not `<=`) is what excludes them. `coverage_end IS
     NULL` is open-ended and never excludes. Read back as a Member rather than pushed
-    into a single boolean SQL expression so the 404-vs-false distinction main.py needs
+    into a single boolean SQL expression so the 404-vs-false distinction routers/members.py needs
     (member missing vs. member present but uncovered) stays available to the caller.
     """
     member = await get(conn, member_id)
