@@ -11,7 +11,7 @@ from datetime import date
 import httpx
 from pramana_common.schemas import Hit
 
-from adjudication.services.upstream import UpstreamUnavailable
+from adjudication.services import upstream
 
 
 class PolicyClient:
@@ -20,21 +20,18 @@ class PolicyClient:
         self._base_url = base_url
 
     async def search(self, query: str, date_of_service: date | None, limit: int) -> list[Hit]:
-        try:
-            response = await self._client.post(
-                f"{self._base_url}/search",
-                json={
-                    "query": query,
-                    "date_of_service": date_of_service.isoformat() if date_of_service else None,
-                    "limit": limit,
-                },
-            )
-        except httpx.TimeoutException as exc:
-            raise UpstreamUnavailable("policy", "timed out") from exc
-        except httpx.HTTPError as exc:
-            raise UpstreamUnavailable("policy", f"connection failed: {exc}") from exc
-
-        if response.status_code // 100 != 2:
-            raise UpstreamUnavailable("policy", f"status {response.status_code}")
-
-        return [Hit.model_validate(hit) for hit in response.json()]
+        path = "/search"
+        response = await upstream.send(
+            self._client,
+            "policy",
+            "POST",
+            f"{self._base_url}{path}",
+            json={
+                "query": query,
+                "date_of_service": date_of_service.isoformat() if date_of_service else None,
+                "limit": limit,
+            },
+        )
+        return upstream.parse(
+            "policy", response, path, lambda body: [Hit.model_validate(hit) for hit in body]
+        )

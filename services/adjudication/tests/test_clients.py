@@ -111,6 +111,50 @@ async def test_search_timeout_raises_upstream_unavailable():
     assert exc_info.value.service == "policy"
 
 
+async def test_search_non_json_body_raises_upstream_unavailable():
+    """A 200 with an unparseable body must not escape as a bare `JSONDecodeError` --
+    the pipeline only ever catches `UpstreamUnavailable`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=b"not json")
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable) as exc_info:
+            await PolicyClient(client, BASE_URL).search("q", None, 5)
+
+    assert exc_info.value.service == "policy"
+    assert "unparseable" in exc_info.value.detail
+    assert "status" not in exc_info.value.detail
+
+
+async def test_search_hit_missing_field_raises_upstream_unavailable():
+    """A 200 whose hits don't validate as `Hit` must not escape as a bare
+    `pydantic.ValidationError`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "chunk_id": 58,
+                    "policy_id": 1,
+                    "display_id": "240.4",
+                    "heading_path": "B",
+                    "text": "greater than or equal to 15 events per hour",
+                    # "score" omitted -- Hit requires it.
+                }
+            ],
+        )
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable) as exc_info:
+            await PolicyClient(client, BASE_URL).search("q", None, 5)
+
+    assert exc_info.value.service == "policy"
+    assert "unparseable" in exc_info.value.detail
+    assert "status" not in exc_info.value.detail
+
+
 # --- member_client: coverage tri-state ----------------------------------------------
 
 
@@ -177,6 +221,86 @@ async def test_sleep_studies_404_raises_upstream_unavailable():
     async with _client(handler) as client:
         with pytest.raises(UpstreamUnavailable):
             await MemberClient(client, BASE_URL).sleep_studies("p1", date(2026, 1, 15))
+
+
+# --- member_client: timeouts, all five endpoints ------------------------------------
+
+
+async def test_sleep_studies_timeout_raises_upstream_unavailable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("timed out", request=request)
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable):
+            await MemberClient(client, BASE_URL).sleep_studies("p1", date(2026, 1, 15))
+
+
+async def test_conditions_timeout_raises_upstream_unavailable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("timed out", request=request)
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable):
+            await MemberClient(client, BASE_URL).conditions("p1", date(2026, 1, 15), ["59621000"])
+
+
+async def test_notes_timeout_raises_upstream_unavailable():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.TimeoutException("timed out", request=request)
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable):
+            await MemberClient(client, BASE_URL).notes("p1", date(2026, 1, 15))
+
+
+# --- member_client: unparseable responses -------------------------------------------
+
+
+async def test_adherence_missing_key_raises_upstream_unavailable():
+    """A 200 body missing a key `Adherence(**body)` needs must not escape as a bare
+    `TypeError` -- the pipeline only ever catches `UpstreamUnavailable`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"nights": 30, "qualifying_nights": 24})  # no "fraction"
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable) as exc_info:
+            await MemberClient(client, BASE_URL).adherence(
+                "p1", date(2026, 1, 1), date(2026, 1, 31), min_hours=4.0
+            )
+
+    assert exc_info.value.service == "member"
+    assert "unparseable" in exc_info.value.detail
+    assert "status" not in exc_info.value.detail
+
+
+async def test_sleep_studies_missing_key_raises_upstream_unavailable():
+    """A 200 body missing a key the dataclass build needs must not escape as a bare
+    `KeyError`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json=[
+                {
+                    "id": 1,
+                    "date": "2025-11-01",
+                    "test_type": "home_type_iv",
+                    "channels": 4,
+                    "apnea_events": 251,
+                    "recorded_hours": 5.35,
+                    # "ahi" omitted -- SleepStudy requires it.
+                }
+            ],
+        )
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable) as exc_info:
+            await MemberClient(client, BASE_URL).sleep_studies("p1", date(2026, 1, 15))
+
+    assert exc_info.value.service == "member"
+    assert "unparseable" in exc_info.value.detail
+    assert "status" not in exc_info.value.detail
 
 
 # --- member_client: the other four factual endpoints ---------------------------------
