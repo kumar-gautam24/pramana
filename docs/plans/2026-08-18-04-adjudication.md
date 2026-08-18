@@ -76,9 +76,12 @@ case_events        id, case_id, seq, type, payload jsonb, created_at
 - `criteria.set_ordinal` is what makes ADR-0011 representable: criteria belonging to the same alternative set share it.
 - `determinations.winning_set` is NULL on escalation and names the satisfied set on approval — the audit answer to "which path approved this".
 - `case_events` gets `UNIQUE (case_id, seq)` so a gap or a duplicate is a constraint violation rather than a silent reordering, and a `BEFORE UPDATE OR DELETE` trigger that raises. Append-only must be enforced by the database, not by convention: a commissioner's audit rests on it.
-- Every FK `ON DELETE CASCADE`; verify the cascade **by executing it**.
+- Every FK `ON DELETE CASCADE` **except `case_events.case_id`, which is `ON DELETE RESTRICT`.** The two requirements above cannot both hold for that one table: a cascading delete of a case reaches `case_events`, where the append-only trigger raises, so the delete fails either way. What differs is the error a reader gets. Making it explicit says the true thing — a case whose audit trail exists cannot be deleted, which is the point of keeping one. The trigger stays as the second line of defence, and covers `TRUNCATE` too: `TRUNCATE` bypasses row triggers entirely, so it needs its own `BEFORE TRUNCATE ... FOR EACH STATEMENT` trigger. An audit log a `TRUNCATE` empties is not an audit log.
+- `cases.status` tracks pipeline progress only — `queued`, `running`, `decided`, `failed`. The outcome lives on the determination and is never mirrored here; two copies of a decision drift, and only one of them is the one a regulator reads.
+- No foreign key crosses a service boundary: `criteria.source_chunk_id` and `source_display_id` belong to `policy`, `cases.member_id` to `member`, `reviews.clinician_id` to `auth`. They are recorded as values, unreferenced.
+- A case may be adjudicated more than once, so `determinations` carries no unique constraint on `case_id` — a superseded determination must survive. The current one is the newest by `created_at`, then `id`.
 
-- [ ] Tests asserting: the append-only trigger rejects an UPDATE and a DELETE; `(case_id, seq)` is unique; `winning_set` is nullable; cascade empties all children.
+- [ ] Tests asserting: the append-only trigger rejects an UPDATE, a DELETE and a TRUNCATE; `(case_id, seq)` is unique; `winning_set` is nullable; deleting a case cascades its four other child tables empty; deleting a case that has events is refused.
 - [ ] Apply via `scripts/migrate.py`; `pg_dump --schema-only` the result and paste it.
 - [ ] Commit.
 
