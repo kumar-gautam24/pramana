@@ -28,21 +28,21 @@ from pathlib import Path
 
 import pytest
 
-from member.generate import (
+from member.domain.generate import (
     TARGETS,
     TEST_TYPES,
     SleepProfile,
     generate_sleep_profile,
     generate_usage_nights,
 )
-from member.seed import (
+from member.domain.synthea import parse_conditions, parse_patients
+from member.services.seed import (
     FIXTURE_PLAN,
     STUDY_DATE,
     USAGE_NIGHTS,
     USAGE_START,
     MemberPlan,
 )
-from member.synthea import parse_conditions, parse_patients
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "synthea"
 

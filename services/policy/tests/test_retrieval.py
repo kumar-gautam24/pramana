@@ -2,8 +2,11 @@ from datetime import date
 
 import pytest
 
+from policy.domain.retrieval import reciprocal_rank_fusion
 from policy.models import Chunk, Policy
-from policy.retrieval import reciprocal_rank_fusion, search
+from policy.repositories import chunks as chunks_repo
+from policy.repositories import policies as policies_repo
+from policy.services.search import search
 
 #: A fixed dimension-384 vector reused everywhere. Dense ranking is not the thing under
 #: test here -- correctness of the date filter turns on the SQL-level policy_id
@@ -39,7 +42,8 @@ async def _policy(
     effective_from: date,
     effective_to: date | None,
 ) -> Policy:
-    policy = Policy(
+    return await policies_repo.insert(
+        session,
         document_id=document_id,
         document_version=version,
         display_id=display_id,
@@ -49,22 +53,13 @@ async def _policy(
         benefit_category="",
         source_url="https://example.invalid/test",
     )
-    session.add(policy)
-    await session.flush()
-    return policy
 
 
 async def _chunk(session, policy: Policy, ordinal: int, text: str) -> Chunk:
-    chunk = Chunk(
-        policy_id=policy.id,
-        ordinal=ordinal,
-        heading_path="Root > Section",
-        text=text,
-        embedding=EMBED,
+    inserted = await chunks_repo.insert_many(
+        session, policy.id, [(ordinal, "Root > Section", text, EMBED)]
     )
-    session.add(chunk)
-    await session.flush()
-    return chunk
+    return inserted[0]
 
 
 def test_fuses_two_rankings():

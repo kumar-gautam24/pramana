@@ -3,11 +3,11 @@ from datetime import date
 from pathlib import Path
 
 import pytest
-from sqlalchemy import func, select
 
-from policy.cms import NcdRecord, parse_ncd_response
-from policy.ingest import ingest_ncd
-from policy.models import Chunk, Policy
+from policy.repositories import chunks as chunks_repo
+from policy.repositories import policies as policies_repo
+from policy.services.cms import NcdRecord, parse_ncd_response
+from policy.services.ingest import ingest_ncd
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "ncd-226.json").read_text())
 
@@ -31,10 +31,11 @@ async def test_ingest_stores_the_policy_and_its_chunks(session):
     assert result.policies_added == 1
     assert result.chunks_added > 0
 
-    policy = (await session.execute(select(Policy))).scalar_one()
-    assert policy.display_id == "240.4"
-    assert policy.effective_from == date(2008, 3, 13)
-    assert policy.effective_to is None
+    policies = await policies_repo.fetch_all(session)
+    assert len(policies) == 1
+    assert policies[0].display_id == "240.4"
+    assert policies[0].effective_from == date(2008, 3, 13)
+    assert policies[0].effective_to is None
 
 
 async def test_ingest_is_idempotent(session):
@@ -46,28 +47,28 @@ async def test_ingest_is_idempotent(session):
     assert second.skipped == 1
     assert second.chunks_added == 0
 
-    chunk_count = (await session.execute(select(func.count()).select_from(Chunk))).scalar_one()
-    assert chunk_count == first.chunks_added
+    assert await chunks_repo.count(session) == first.chunks_added
 
 
 async def test_every_chunk_carries_a_heading_path(session):
     await ingest_ncd(session, StubEmbedder(), parse_ncd_response(FIXTURE))
 
-    chunks = (await session.execute(select(Chunk))).scalars().all()
+    chunks = await chunks_repo.fetch_all(session)
     assert chunks
     assert all(c.heading_path.strip() for c in chunks)
 
 
 async def test_chunks_are_removed_with_their_policy(session):
-    """Chunks outliving their policy would be retrievable and uncitable."""
+    """Chunks outliving their policy would be retrievable and uncitable. Exercised
+    against the real ON DELETE CASCADE rather than read off the DDL -- the schema is the
+    thing being trusted here, so the schema is what has to run."""
     await ingest_ncd(session, StubEmbedder(), parse_ncd_response(FIXTURE))
-    policy = (await session.execute(select(Policy))).scalar_one()
+    policies = await policies_repo.fetch_all(session)
+    assert len(policies) == 1
 
-    await session.delete(policy)
-    await session.flush()
+    await session.execute("DELETE FROM policies WHERE id = $1", policies[0].id)
 
-    remaining = (await session.execute(select(func.count()).select_from(Chunk))).scalar_one()
-    assert remaining == 0
+    assert await chunks_repo.count(session) == 0
 
 
 async def test_a_record_with_no_prose_is_skipped_not_stored(session):
@@ -92,7 +93,7 @@ async def test_a_record_with_no_prose_is_skipped_not_stored(session):
     assert result.policies_added == 0
     assert result.chunks_added == 0
     assert result.skipped == 1
-    assert (await session.execute(select(Policy))).scalar_one_or_none() is None
+    assert await policies_repo.find_by_document_version(session, "999", 1) is None
 
     # The same document/version, now carrying real content, must still be ingestible --
     # the earlier skip must not have left behind a row that permanently blocks it.
@@ -112,4 +113,6 @@ async def test_a_record_with_no_prose_is_skipped_not_stored(session):
 
     assert second.policies_added == 1
     assert second.chunks_added > 0
-    assert (await session.execute(select(Policy))).scalar_one().document_id == "999"
+    stored = await policies_repo.find_by_document_version(session, "999", 1)
+    assert stored is not None
+    assert stored.document_id == "999"

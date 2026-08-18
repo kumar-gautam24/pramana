@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import date
 
-from policy.dating import in_force_on
+from policy.domain.dating import in_force_on
 
 
 @dataclass(frozen=True)

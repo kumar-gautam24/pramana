@@ -1,12 +1,13 @@
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import func, select
 
-import member.notes as notes_module
-from member.models import CpapUsage, Member, Note, SleepStudy
-from member.notes import BENEFIT_INDICATORS
-from member.seed import (
+import member.domain.notes as notes_module
+from member.domain.notes import BENEFIT_INDICATORS
+from member.domain.synthea import SyntheaCondition, SyntheaEncounter, SyntheaPatient
+from member.repositories import notes as notes_repo
+from member.repositories import sleep_studies as sleep_studies_repo
+from member.services.seed import (
     FOLLOW_UP_DATE,
     STUDY_DATE,
     USAGE_NIGHTS,
@@ -14,7 +15,6 @@ from member.seed import (
     MemberPlan,
     seed_population,
 )
-from member.synthea import SyntheaCondition, SyntheaEncounter, SyntheaPatient
 
 PATIENTS = [
     SyntheaPatient(id="s1", birth_date=date(1970, 1, 1), sex="F"),
@@ -61,34 +61,42 @@ def _benefit_sentences_in(text: str) -> list[str]:
     ]
 
 
-async def _table_count(session, model) -> int:
-    result = await session.execute(select(func.count()).select_from(model))
-    return result.scalar_one()
+async def _table_count(session, table: str) -> int:
+    return await session.fetchval(f"SELECT count(*) FROM {table}")
+
+
+async def _note_on(session, member_id: str, note_date: date):
+    """The one note seeded for `member_id` on exactly `note_date`. Two notes are seeded
+    per member (initial and follow-up, on different dates), so filtering on-or-before
+    and then pinning the exact date is equivalent to the original ORM query's
+    `Note.date == note_date` and `.scalar_one()`."""
+    notes = await notes_repo.notes_before(session, member_id, note_date)
+    matches = [note for note in notes if note.date == note_date]
+    assert len(matches) == 1
+    return matches[0]
 
 
 async def test_seeding_twice_adds_nothing_the_second_time(db_session):
     """Idempotent by member id: seeding runs after failures and on a schedule, so a
     second run must be a no-op, not a way to double the population."""
     first = await seed_population(db_session, PATIENTS, CONDITIONS, ENCOUNTERS, 42, PLAN)
-    await db_session.flush()
 
     assert first.members == 2
     assert first.studies == 2
     # Two notes per member: the initial visit and the continuation follow-up.
     assert first.notes == 4
-    members_after_first = await _table_count(db_session, Member)
-    studies_after_first = await _table_count(db_session, SleepStudy)
-    usage_after_first = await _table_count(db_session, CpapUsage)
-    notes_after_first = await _table_count(db_session, Note)
+    members_after_first = await _table_count(db_session, "members")
+    studies_after_first = await _table_count(db_session, "sleep_studies")
+    usage_after_first = await _table_count(db_session, "cpap_usage")
+    notes_after_first = await _table_count(db_session, "notes")
 
     second = await seed_population(db_session, PATIENTS, CONDITIONS, ENCOUNTERS, 42, PLAN)
-    await db_session.flush()
 
     assert second == type(second)(members=0, studies=0, usage_nights=0, notes=0)
-    assert await _table_count(db_session, Member) == members_after_first
-    assert await _table_count(db_session, SleepStudy) == studies_after_first
-    assert await _table_count(db_session, CpapUsage) == usage_after_first
-    assert await _table_count(db_session, Note) == notes_after_first
+    assert await _table_count(db_session, "members") == members_after_first
+    assert await _table_count(db_session, "sleep_studies") == studies_after_first
+    assert await _table_count(db_session, "cpap_usage") == usage_after_first
+    assert await _table_count(db_session, "notes") == notes_after_first
 
 
 async def test_near_miss_high_member_genuinely_has_an_ahi_below_fifteen(db_session):
@@ -96,22 +104,17 @@ async def test_near_miss_high_member_genuinely_has_an_ahi_below_fifteen(db_sessi
     AHI would make the whole refusal half of the eval meaningless -- so this reads
     the row back from the database rather than trusting the generator."""
     await seed_population(db_session, PATIENTS, CONDITIONS, ENCOUNTERS, 42, PLAN)
-    await db_session.flush()
 
-    result = await db_session.execute(select(SleepStudy).where(SleepStudy.member_id == "s2"))
-    study = result.scalar_one()
+    studies = await sleep_studies_repo.sleep_studies_before(db_session, "s2", STUDY_DATE)
+    assert len(studies) == 1
 
-    assert study.ahi < 15.0
+    assert studies[0].ahi < 15.0
 
 
 async def test_a_member_with_no_symptoms_gets_a_note_documenting_none(db_session):
     await seed_population(db_session, PATIENTS, CONDITIONS, ENCOUNTERS, 42, PLAN)
-    await db_session.flush()
 
-    result = await db_session.execute(
-        select(Note).where(Note.member_id == "s2", Note.date == STUDY_DATE)
-    )
-    note = result.scalar_one()
+    note = await _note_on(db_session, "s2", STUDY_DATE)
 
     assert not any(s in note.text.lower() for s in ("sleepiness", "insomnia", "mood", "cognition"))
 
@@ -122,13 +125,9 @@ async def test_documented_benefit_is_seeded_after_the_usage_window_closes(db_ses
     landing on the study date left the criterion representable and unreachable: plan 04
     could query /notes and find nothing to judge."""
     await seed_population(db_session, PATIENTS, CONDITIONS, ENCOUNTERS, 42, PLAN)
-    await db_session.flush()
 
     last_night = USAGE_START + timedelta(days=USAGE_NIGHTS - 1)
-    result = await db_session.execute(
-        select(Note).where(Note.member_id == "s1", Note.date == FOLLOW_UP_DATE)
-    )
-    note = result.scalar_one()
+    note = await _note_on(db_session, "s1", FOLLOW_UP_DATE)
 
     assert note.date > last_night
     assert _benefit_sentences_in(note.text)
@@ -142,12 +141,8 @@ async def test_a_member_with_no_benefits_gets_a_follow_up_documenting_none(db_se
     happened and found nothing to report, not a missing note. An absent note is
     unanswerable; this one is answerable and answers no."""
     await seed_population(db_session, PATIENTS, CONDITIONS, ENCOUNTERS, 42, PLAN)
-    await db_session.flush()
 
-    result = await db_session.execute(
-        select(Note).where(Note.member_id == "s2", Note.date == FOLLOW_UP_DATE)
-    )
-    note = result.scalar_one()
+    note = await _note_on(db_session, "s2", FOLLOW_UP_DATE)
 
     assert not _benefit_sentences_in(note.text)
 
@@ -182,11 +177,12 @@ async def test_a_plan_naming_an_unknown_target_raises(db_session):
 
 async def test_every_seeded_member_has_a_coverage_window(db_session):
     await seed_population(db_session, PATIENTS, CONDITIONS, ENCOUNTERS, 42, PLAN)
-    await db_session.flush()
 
-    result = await db_session.execute(select(Member))
-    members = result.scalars().all()
+    rows = await db_session.fetch(
+        "SELECT coverage_start FROM members WHERE id = ANY($1::text[])",
+        [p.id for p in PATIENTS],
+    )
 
-    assert len(members) == 2
-    for member in members:
-        assert member.coverage_start is not None
+    assert len(rows) == 2
+    for row in rows:
+        assert row["coverage_start"] is not None

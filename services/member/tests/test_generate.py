@@ -2,8 +2,13 @@ from datetime import date
 
 import pytest
 
-import member.generate as generate_module
-from member.generate import TARGETS, TEST_TYPES, generate_sleep_profile, generate_usage_nights
+import member.domain.generate as generate_module
+from member.domain.generate import (
+    TARGETS,
+    TEST_TYPES,
+    generate_sleep_profile,
+    generate_usage_nights,
+)
 
 STUDY_DATE = date(2026, 1, 10)
 

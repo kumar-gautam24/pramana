@@ -3,8 +3,8 @@ from collections import Counter
 
 import pytest
 
-from policy.chunking import chunk_sections
-from policy.parsing import Section
+from policy.domain.chunking import chunk_sections
+from policy.domain.parsing import Section
 
 
 def _tokens(text: str) -> Counter:

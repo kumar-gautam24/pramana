@@ -5,8 +5,8 @@ from pathlib import Path
 
 from lxml import etree
 
-from policy.cms import parse_ncd_response
-from policy.parsing import html_to_sections, unescape_twice
+from policy.domain.parsing import html_to_sections, unescape_twice
+from policy.services.cms import parse_ncd_response
 
 FIXTURE = json.loads((Path(__file__).parent / "fixtures" / "ncd-226.json").read_text())
 CRITERIA_HTML = parse_ncd_response(FIXTURE)[0].sections_html["indications_limitations"]

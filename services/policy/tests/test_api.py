@@ -5,9 +5,9 @@ so these run without loading the models. `test_startup_*` enters the context del
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.ext.asyncio import create_async_engine
 
-from policy import main
+from policy import db
+from policy.config import Settings
 from policy.main import app
 
 #: A parseable URL whose port nothing listens on, so connecting fails fast and offline.
@@ -26,6 +26,10 @@ def started(monkeypatch, client) -> TestClient:
     monkeypatch.setattr(app.state, "embedder", object(), raising=False)
     monkeypatch.setattr(app.state, "reranker", object(), raising=False)
     return client
+
+
+def _unreachable_settings() -> Settings:
+    return Settings(database_url=UNREACHABLE_DATABASE_URL)
 
 
 def test_health_reports_ok(client):
@@ -47,7 +51,11 @@ def test_ready_is_unready_before_the_models_are_loaded(client):
 
 
 def test_ready_is_unready_when_the_database_is_unreachable(monkeypatch, started):
-    monkeypatch.setattr(main, "engine", create_async_engine(UNREACHABLE_DATABASE_URL))
+    # db.probe_fresh() opens its own pool from policy.db.get_settings() rather than
+    # app.state.pool (see main.py's lifespan and routers/health.py's /ready), so
+    # redirecting that one seam is enough to make the check fail without an engine
+    # object to swap out.
+    monkeypatch.setattr(db, "get_settings", _unreachable_settings)
 
     response = started.get("/ready")
 
@@ -63,10 +71,10 @@ def test_ready_reports_ready_when_every_dependency_answers(started):
 
 
 def test_startup_fails_when_the_database_is_unreachable(monkeypatch):
-    """`create_async_engine` opens no connection, so a bad DATABASE_URL used to start
+    """pool() opens no connection (min_size=0), so a bad DATABASE_URL used to start
     cleanly and surface as a 500 on the first search. Misconfiguration must fail at
     startup instead -- the probe in the lifespan is what enforces that."""
-    monkeypatch.setattr(main, "engine", create_async_engine(UNREACHABLE_DATABASE_URL))
+    monkeypatch.setattr(db, "get_settings", _unreachable_settings)
 
     with pytest.raises(OSError), TestClient(app):
         pass

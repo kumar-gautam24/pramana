@@ -47,8 +47,14 @@ for a claim. The system asserts nothing it lacks pramāṇa for.
    audit, "show me the query that decided this" needs a literal answer. See ADR-0013.
 
 5b. **Layered structure**: `routers/` → `services/` → `repositories/` → `models/`, with pure
-   I/O-free logic in `domain/`. SQL lives in `repositories/` and nowhere else. `main.py` is
-   app assembly only.
+   I/O-free logic in `domain/`. `main.py` is app assembly only.
+
+   Two carve-outs, stated because the rule read as absolute and the code already differs.
+   A router may call a repository directly when there is genuinely nothing to orchestrate —
+   `member`'s fact endpoints are one query each, and a passthrough service layer would be
+   ceremony. Add a service the moment a route does more than one thing. And SQL lives in
+   `repositories/` **plus** `db.py` and `migrations/`, which are infrastructure rather than
+   domain queries; tests are outside the rule entirely.
 
 6. **Redis carries work; Postgres carries truth.** Job state lives in the owning service's
    database, so status still answers when the broker is down.
@@ -112,7 +118,16 @@ column that six code paths update is not, however few lines it takes.
 
 ```bash
 docker compose up -d --build
-for s in policy adjudication evals auth member; do docker compose exec -T $s alembic upgrade head; done
+# Migrations run out of band, not from a service lifespan: a replica that migrates on
+# boot turns a schema change into something that happens whenever a container restarts.
+for s in policy member; do
+  (cd services/$s && uv run python ../../scripts/migrate.py \
+      postgresql://pramana:pramana@localhost:5432/pramana_$s migrations)
+done
+# A database that reached its schema before ADR-0013 (built by Alembic) has no
+# schema_migrations row, so the runner would try to apply 0001 and hit "already exists".
+# scripts/adopt_migrations.py records it as applied instead, and refuses if the schema is
+# genuinely absent.
 docker compose exec -T <service> pytest
 cd apps/web && npm run dev
 ```
