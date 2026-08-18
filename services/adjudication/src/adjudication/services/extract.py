@@ -11,16 +11,16 @@ verify.
 Given the same `hits` and the same model response, extraction is reproducible --
 there is no I/O here beyond the single injected `LLMProvider.chat` call."""
 
+from copy import deepcopy
 from dataclasses import dataclass
 from importlib import resources
 from typing import Any
 
 from pramana_common.criteria import CriterionType
 from pramana_common.schemas import Hit
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from adjudication.domain.params import (
-    FACT_ARGS,
     FACTS,
     TEMPORAL_OPERATORS,
     THRESHOLD_OPERATORS,
@@ -45,24 +45,42 @@ _SYSTEM_PROMPT_TEMPLATE = (
 
 
 class _RawCriterion(BaseModel):
+    # `extra="forbid"`, not the pydantic default `"ignore"`: this module's own
+    # docstring promises every field the model produces is validated, and a key like
+    # `"negated": true` silently dropped by the default would be validating nothing
+    # -- the case would proceed as if the model had never said it.
+    model_config = ConfigDict(extra="forbid")
+
     text: str
     #: Kept as `str`, not `CriterionType`, deliberately: this module decides what
     #: happens to an unrecognised value, explicitly and visibly below, rather than
     #: letting pydantic's enum coercion make that call implicitly.
     type: str
     params: dict[str, Any] = {}
+    #: The schema built for a given call constrains this to an enum of the retrieved
+    #: chunk ids encoded as *strings* (see `_build_schema`); kept `int` here anyway
+    #: because pydantic's lax int validation already accepts a numeral string and
+    #: coerces it ("58" -> 58), so a well-behaved provider's string answer and this
+    #: module's own hand-authored (int-literal) test fixtures both validate without
+    #: a second field or a manual parse step. A value that isn't a clean integer at
+    #: all (not on the schema's enum, or mangled) fails here as a `ValidationError`,
+    #: caught below and re-raised as `ExtractionInvalid`.
     source_chunk_id: int
 
 
 class _RawSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     criteria: list[_RawCriterion]
 
 
 class _RawExtraction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     sets: list[_RawSet]
 
 
-_RAW_EXTRACTION_SCHEMA = _RawExtraction.model_json_schema()
+_BASE_SCHEMA = _RawExtraction.model_json_schema()
 
 
 # --- this module's own output shape -------------------------------------------------
@@ -89,21 +107,31 @@ class ExtractedSet:
     criteria: tuple[ExtractedCriterion, ...]
 
 
-def _describe_fact_args() -> str:
-    lines = []
-    for fact, args in sorted(FACT_ARGS.items()):
-        shape = ", ".join(f'"{key}": <{typ.__name__}>' for key, typ in args.items())
-        lines.append(f"- {fact}: {{{shape}}}")
-    return "\n".join(lines)
+def _describe_fact_args(criterion_type: CriterionType) -> str:
+    """The facts a given `CriterionType` may name, inline with any `fact_args` that
+    fact requires -- shown at the point the model decides `type`, not introduced
+    separately afterwards, so a model following the `threshold` line literally does
+    not omit `fact_args` on an adherence criterion."""
+    parts = []
+    for fact_name, spec in sorted(FACTS.items()):
+        if criterion_type not in spec.permitted_types:
+            continue
+        if spec.fetch_args:
+            shape = ", ".join(f'"{key}": <{typ.__name__}>' for key, typ in spec.fetch_args.items())
+            parts.append(f'`{fact_name}` (requires `"fact_args": {{{shape}}}`)')
+        else:
+            parts.append(f"`{fact_name}`")
+    return ", ".join(parts)
 
 
 def _build_system_prompt() -> str:
     return _SYSTEM_PROMPT_TEMPLATE.format(
         criterion_types=[t.value for t in CriterionType],
         threshold_operators=sorted(THRESHOLD_OPERATORS),
+        threshold_facts=_describe_fact_args(CriterionType.THRESHOLD),
+        enum_facts=_describe_fact_args(CriterionType.ENUM),
         temporal_operators=sorted(TEMPORAL_OPERATORS),
-        facts=", ".join(sorted(FACTS)),
-        fact_args=_describe_fact_args(),
+        temporal_facts=_describe_fact_args(CriterionType.TEMPORAL),
     )
 
 
@@ -124,6 +152,29 @@ def _build_messages(hits: list[Hit]) -> list[dict[str, str]]:
     ]
 
 
+def _build_schema(retrieved_ids: list[int]) -> dict[str, Any]:
+    """Built per call, not once at import: `source_chunk_id` is constrained to an
+    enum of the ids retrieved for *this* case, encoded as strings, rather than a bare
+    `integer`.
+
+    This is the predecessor project's own lesson, carried forward deliberately (the
+    brief points at it directly): Deflect's answer service once asked a local model
+    for a bare integer array of citation ids and got `[4161, 2750, 4179]` back
+    concatenated into a single malformed value, `4161275041794180` -- a
+    well-typed-looking but wrong answer. A closed string enum leaves the model
+    nothing to format: it can only select one of the ids actually shown to it.
+    `extract()` below still validates membership after the fact (a schema is a
+    request, not a guarantee against every provider), but constraining the schema is
+    what stops a malformed id from being emitted in the first place, which is
+    strictly better than catching it afterwards as an escalation."""
+    schema = deepcopy(_BASE_SCHEMA)
+    schema["$defs"]["_RawCriterion"]["properties"]["source_chunk_id"] = {
+        "type": "string",
+        "enum": [str(chunk_id) for chunk_id in retrieved_ids],
+    }
+    return schema
+
+
 async def extract(llm: LLMProvider, hits: list[Hit]) -> list[ExtractedSet]:
     """Ask the model to decompose `hits` -- the governing policy's retrieved chunks
     -- into alternative criteria sets, validate every field of the answer, and return
@@ -138,7 +189,8 @@ async def extract(llm: LLMProvider, hits: list[Hit]) -> list[ExtractedSet]:
     and `services.upstream`."""
     retrieved = {hit.chunk_id: hit.display_id for hit in hits}
 
-    response = await llm.chat(_build_messages(hits), _RAW_EXTRACTION_SCHEMA)
+    schema = _build_schema(sorted(retrieved))
+    response = await llm.chat(_build_messages(hits), schema)
     try:
         raw = _RawExtraction.model_validate(response)
     except ValidationError as exc:
@@ -172,6 +224,11 @@ async def extract(llm: LLMProvider, hits: list[Hit]) -> list[ExtractedSet]:
                     f"{raw_criterion.type!r}, not one of {[t.value for t in CriterionType]}"
                 ) from None
 
+            # The schema already constrained this to a string enum of retrieved ids
+            # (see `_build_schema`); this membership check is what makes rejection of
+            # anything else certain rather than merely likely, and is what a
+            # provider that ignores `format` (or a hand-authored test fixture) still
+            # goes through.
             if raw_criterion.source_chunk_id not in retrieved:
                 raise ExtractionInvalid(
                     f"set {set_ordinal} criterion {ordinal} cites chunk "

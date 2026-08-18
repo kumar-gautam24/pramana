@@ -9,6 +9,8 @@ criterion it belongs to must be rejected, not passed through in a guessed-at sha
 
 Pure: no I/O, no imports of `db`, `asyncpg`, `httpx`, or `services/`."""
 
+from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Any
 
 from pramana_common.criteria import CriterionType
@@ -27,31 +29,88 @@ class ExtractionInvalid(Exception):
     reasoned. See `services/extract.py`."""
 
 
-#: The complete set of facts the member service can answer a question about -- the
+class FactDataType(StrEnum):
+    """What a fact's value looks like -- drives the shape check on `threshold`'s
+    `value` and `enum`'s `allowed` members, so that check is decided once per fact
+    rather than hardcoded once per validator and left to drift out of sync with the
+    facts it's supposed to cover (fix round 2: `{"fact": "channels", "allowed": [3, 4]}`
+    used to be rejected because `enum` hardcoded a string check regardless of which
+    fact was named, and the prompt promised `allowed` could hold any `<value>`)."""
+
+    NUMBER = "number"
+    STRING = "string"
+    #: Declared for documentation -- `study_date` *is* a date -- but not currently
+    #: enforced against any criterion's own params: `temporal`'s `value` is always a
+    #: day count (see TEMPORAL_OPERATORS), never the date itself, regardless of which
+    #: date fact is named. No current fact needs a literal date value validated.
+    DATE = "date"
+
+
+@dataclass(frozen=True)
+class FactSpec:
+    datatype: FactDataType
+    #: Which `CriterionType`s may name this fact. A `threshold` naming `test_type`
+    #: doesn't type-check (there is no numeric "value" a category name could be
+    #: compared against); a `threshold` naming `condition_codes` type-checks but
+    #: can't be fetched (nothing supplies which codes to count, unlike `enum`, where
+    #: `allowed` doubles as that list). Closing this off here, once per fact, is what
+    #: rejects every such combination in one place instead of ad hoc per validator.
+    permitted_types: frozenset[CriterionType]
+    #: Extra arguments `MemberClient` needs before this fact can be fetched at all,
+    #: beyond the case's date of service. Empty for every fact answerable from a
+    #: single `before`/`on` cutoff.
+    fetch_args: dict[str, type] = field(default_factory=dict)
+
+
+#: The complete map of facts the member service can answer a question about -- the
 #: API surface of `MemberClient`, not a per-policy vocabulary (see CLAUDE.md
 #: invariant 3: this hardcodes nothing about NCD 240.4 or any other policy). A
-#: criterion naming a fact outside this set is one the system has no way to check,
-#: and that must be rejected here rather than guessed at by a verifier later.
+#: criterion naming a fact outside this map, or naming one under a `CriterionType`
+#: its `permitted_types` doesn't allow, is one the system has no way to check, and
+#: that must be rejected here rather than guessed at by a verifier later.
 #:
-#:   ahi, channels, apnea_events, recorded_hours, test_type -- MemberClient.sleep_studies
-#:   study_date               -- MemberClient.sleep_studies (SleepStudy.date)
-#:   condition_codes          -- MemberClient.conditions
-#:   adherence_fraction, adherence_nights -- MemberClient.adherence
-#:   coverage_active          -- MemberClient.coverage
-FACTS = frozenset(
-    {
-        "ahi",
-        "channels",
-        "apnea_events",
-        "recorded_hours",
-        "test_type",
-        "study_date",
-        "condition_codes",
-        "adherence_fraction",
-        "adherence_nights",
-        "coverage_active",
-    }
-)
+#: Source, one row per fact:
+#:   ahi, channels, apnea_events, recorded_hours -- MemberClient.sleep_studies (SleepStudy)
+#:   test_type                -- MemberClient.sleep_studies (SleepStudy.test_type)
+#:   study_date                -- MemberClient.sleep_studies (SleepStudy.date)
+#:   condition_codes           -- MemberClient.conditions (Condition.code)
+#:   adherence_fraction, adherence_nights -- MemberClient.adherence (Adherence)
+#:   coverage_active            -- MemberClient.coverage (CoverageStatus)
+#:
+#: `MemberClient.adherence(member_id, start, end, min_hours)` needs a window and a
+#: nightly-hours bar before it will answer at all, and `min_hours` has no default on
+#: that endpoint deliberately -- the nightly-hours bar is the *policy's* number, not
+#: the member service's. Without `fetch_args` to carry it, a verifier would have to
+#: hardcode it, exactly the per-policy hardcoding invariant 3 forbids -- and it is
+#: NCD 240.4's actual continuation criterion, not a hypothetical case.
+#:
+#: `condition_codes` is `enum`-only, not `threshold`/`temporal`: `MemberClient.conditions`
+#: needs a `codes` argument the same way `adherence` needs `min_hours`/`window_days`,
+#: but `enum`'s `allowed` list already supplies exactly that -- "the fact is one of
+#: these codes" and "these are the codes to look for" are the same list. A `threshold`
+#: or `temporal` naming `condition_codes` has no such list to reuse and nowhere else to
+#: put one, so it is unfetchable and closed off via `permitted_types` rather than given
+#: a second, redundant `fetch_args` shape.
+FACTS: dict[str, FactSpec] = {
+    "ahi": FactSpec(FactDataType.NUMBER, frozenset({CriterionType.THRESHOLD})),
+    "channels": FactSpec(FactDataType.NUMBER, frozenset({CriterionType.THRESHOLD})),
+    "apnea_events": FactSpec(FactDataType.NUMBER, frozenset({CriterionType.THRESHOLD})),
+    "recorded_hours": FactSpec(FactDataType.NUMBER, frozenset({CriterionType.THRESHOLD})),
+    "test_type": FactSpec(FactDataType.STRING, frozenset({CriterionType.ENUM})),
+    "study_date": FactSpec(FactDataType.DATE, frozenset({CriterionType.TEMPORAL})),
+    "condition_codes": FactSpec(FactDataType.STRING, frozenset({CriterionType.ENUM})),
+    "adherence_fraction": FactSpec(
+        FactDataType.NUMBER,
+        frozenset({CriterionType.THRESHOLD}),
+        fetch_args={"min_hours": float, "window_days": int},
+    ),
+    "adherence_nights": FactSpec(
+        FactDataType.NUMBER,
+        frozenset({CriterionType.THRESHOLD}),
+        fetch_args={"min_hours": float, "window_days": int},
+    ),
+    "coverage_active": FactSpec(FactDataType.STRING, frozenset({CriterionType.ENUM})),
+}
 
 #: Carried explicitly rather than parsed out of prose -- the >=-vs-> distinction has
 #: caused two defects in this project already.
@@ -63,28 +122,19 @@ THRESHOLD_OPERATORS = frozenset({">=", ">", "<=", "<", "=="})
 #: is exactly the kind this project has already been burned by once.
 TEMPORAL_OPERATORS = frozenset({"within_days_before", "within_days_after"})
 
-#: Facts the member service cannot answer without extra arguments, and the type each
-#: argument must have. Every fact *not* listed here is answerable from the case's
-#: date of service alone (a single `before`/`on` cutoff `extract.py`'s caller
-#: supplies, not something a criterion needs to carry).
-#:
-#: `MemberClient.adherence(member_id, start, end, min_hours)` needs a window and a
-#: nightly-hours bar before it will answer at all, and `min_hours` has no default on
-#: that endpoint deliberately -- the nightly-hours bar is the *policy's* number, not
-#: the member service's. Without a place to carry it, a verifier would have to
-#: hardcode it, which is exactly the per-policy hardcoding invariant 3 forbids (see
-#: ADR-0003) -- and it is NCD 240.4's actual continuation criterion ("CPAP used >= 4
-#: hours per night on 70% of nights in a 30-day period"), not a hypothetical case.
-FACT_ARGS: dict[str, dict[str, type]] = {
-    "adherence_fraction": {"min_hours": float, "window_days": int},
-    "adherence_nights": {"min_hours": float, "window_days": int},
-}
-
 
 def _is_number(value: Any) -> bool:
     # bool is a subclass of int; a criterion parameterised with True/False would be a
     # modelling mistake this validator should catch, not silently accept as 1/0.
     return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _matches_datatype(value: Any, datatype: FactDataType) -> bool:
+    if datatype is FactDataType.NUMBER:
+        return _is_number(value)
+    if datatype is FactDataType.STRING:
+        return isinstance(value, str)
+    return False
 
 
 def _is_positive_of_type(value: Any, expected_type: type) -> bool:
@@ -95,23 +145,29 @@ def _is_positive_of_type(value: Any, expected_type: type) -> bool:
 
 def _require_fact(params: dict[str, Any], criterion_type: CriterionType) -> str:
     fact = params.get("fact")
-    if fact not in FACTS:
+    spec = FACTS.get(fact)
+    if spec is None:
         raise ExtractionInvalid(
             f"{criterion_type} criterion names fact {fact!r}, outside the vocabulary the "
             f"member service can answer: {sorted(FACTS)}"
+        )
+    if criterion_type not in spec.permitted_types:
+        raise ExtractionInvalid(
+            f"{criterion_type} criterion names fact {fact!r}, which may only be used "
+            f"with {sorted(t.value for t in spec.permitted_types)} criteria"
         )
     return fact
 
 
 def _validate_fact_args(params: dict[str, Any], fact: str, criterion_type: CriterionType) -> None:
     """Both directions matter, and the first is the one that closes the hardcoding
-    hole: a fact in `FACT_ARGS` is unusable without its arguments, so omitting them
-    must be rejected exactly as firmly as inventing arguments for a fact that takes
-    none -- the latter would let the model attach arbitrary keys nothing reads."""
+    hole: a fact with `fetch_args` is unusable without them, so omitting them must be
+    rejected exactly as firmly as inventing arguments for a fact that needs none --
+    the latter would let the model attach arbitrary keys nothing reads."""
     fact_args = params.get("fact_args")
-    required = FACT_ARGS.get(fact)
+    required = FACTS[fact].fetch_args
 
-    if required is None:
+    if not required:
         if fact_args is not None:
             raise ExtractionInvalid(
                 f"{criterion_type} criterion names fact {fact!r}, which takes no fact_args, "
@@ -153,8 +209,11 @@ def _validate_threshold(params: dict[str, Any]) -> None:
             f"{sorted(THRESHOLD_OPERATORS)}"
         )
     value = params.get("value")
-    if not _is_number(value):
-        raise ExtractionInvalid(f"threshold criterion is missing a numeric 'value', got {value!r}")
+    datatype = FACTS[fact].datatype
+    if not _matches_datatype(value, datatype):
+        raise ExtractionInvalid(
+            f"threshold criterion's value for {fact!r} must be a {datatype.value}, got {value!r}"
+        )
     _validate_fact_args(params, fact, CriterionType.THRESHOLD)
     _reject_unexpected_keys(
         params, CriterionType.THRESHOLD, {"fact", "operator", "value", "fact_args"}
@@ -164,13 +223,14 @@ def _validate_threshold(params: dict[str, Any]) -> None:
 def _validate_enum(params: dict[str, Any]) -> None:
     fact = _require_fact(params, CriterionType.ENUM)
     allowed = params.get("allowed")
+    datatype = FACTS[fact].datatype
     if (
         not isinstance(allowed, list)
         or not allowed
-        or not all(isinstance(member, str) for member in allowed)
+        or not all(_matches_datatype(member, datatype) for member in allowed)
     ):
         raise ExtractionInvalid(
-            f"enum criterion needs a non-empty list of allowed strings, got {allowed!r}"
+            f"enum criterion needs a non-empty list of {datatype.value} values, got {allowed!r}"
         )
     _validate_fact_args(params, fact, CriterionType.ENUM)
     _reject_unexpected_keys(params, CriterionType.ENUM, {"fact", "allowed", "fact_args"})
