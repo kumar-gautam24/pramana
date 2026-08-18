@@ -119,6 +119,45 @@ async def test_case_events_seq_is_unique_per_case(db_session):
         )
 
 
+async def test_a_determination_cannot_be_a_denial(db_session):
+    """ADR-0002 is the project's central claim, and this is the line that makes it
+    structural: the database itself has no room for a denial. Every other guarantee in
+    this file protects an audit trail; this one protects a member.
+
+    Worth stating why it is a test and not just a CHECK constraint. The constraint is
+    the enforcement, but a constraint nobody asserts on is one a later migration widens
+    without anything going red -- and `outcome` is exactly the column a well-meaning
+    change would widen, because a clinician's review really can be a denial. It just
+    does not live here."""
+    case_id = await _insert_case(db_session)
+
+    with pytest.raises(asyncpg.CheckViolationError):
+        await db_session.execute(
+            """
+            INSERT INTO determinations (case_id, outcome, blocking, thresholds)
+            VALUES ($1, 'deny', '[]'::jsonb, '{}'::jsonb)
+            """,
+            case_id,
+        )
+
+
+async def test_a_determination_reason_is_a_closed_set(db_session):
+    """GateReason exists so that only four sentences may be put in front of the
+    clinician who picks the case up (see packages/common). Free text here would let a
+    caller write "denied by policy" into a field a reviewer reads -- a denial in
+    everything but the outcome column."""
+    case_id = await _insert_case(db_session)
+
+    with pytest.raises(asyncpg.CheckViolationError):
+        await db_session.execute(
+            """
+            INSERT INTO determinations (case_id, outcome, reason, blocking, thresholds)
+            VALUES ($1, 'escalate', 'denied by policy', '[]'::jsonb, '{}'::jsonb)
+            """,
+            case_id,
+        )
+
+
 async def test_determination_winning_set_accepts_null(db_session):
     """NULL means escalation -- there is no winning set to name."""
     case_id = await _insert_case(db_session)

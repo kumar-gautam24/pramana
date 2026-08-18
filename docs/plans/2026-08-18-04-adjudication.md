@@ -202,6 +202,19 @@ Update `.workspace/STATE.md`, `JOURNAL.md`, `ERRORS.md` with real counts and any
 
 ---
 
+## Deferred out of this plan, with an owner
+
+- **`reviews.outcome` is deliberately unconstrained.** Unlike `determinations.outcome`,
+  a clinician's review *can* be a denial — that separation is the whole reason the two
+  tables are distinct. But "can be a denial" is not the same as "can be any string", and
+  the column currently accepts one. The closed set is not written here because the
+  vocabulary a reviewer may record (approve / deny / modify / pend for information) is a
+  regulatory question the console plan answers, and guessing it now would put values in
+  the schema no code has ever produced. **Plan 07 (reviewer console) closes it with a
+  migration**, and must not ship with the column still open.
+
+---
+
 ## Self-Review
 
 **Coverage.** Implements the design's §4 pipeline, §5 adjudication tables, ADR-0011's criteria sets, and the SSE audit surface. Does not cover: auth/gateway (plan 05), evals (06), console (07).
