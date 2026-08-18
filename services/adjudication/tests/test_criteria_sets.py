@@ -177,6 +177,40 @@ def test_unmet_counts_every_blocking_verdict_not_only_not_met():
     assert decision.blocking == ("1",)
 
 
+def test_empty_criteria_set_never_wins_the_closest_set_pick():
+    """Fix round 1. A set with zero criteria gets NO_CRITERIA/blocking=() from
+    evaluate_gate, which makes `len(unmet) == 0` -- the same shape as a set one
+    criterion away from approval. That is backwards: an empty set is unsatisfiable,
+    not nearly satisfied. Set 1 is empty (extraction emitted nothing for it); set 2 is
+    real, with one NOT_MET criterion. Without ranking NO_CRITERIA sets last, `min`
+    would pick set 1 for having "fewer" unmet criteria and report the unactionable
+    NO_CRITERIA reason instead of naming the AHI criterion the reviewer should check."""
+    empty_set = CriteriaSet(ordinal=1, criteria=())
+    real_criterion = _criterion(2, set_ordinal=2)
+    results = {"2": _result(2, Verdict.NOT_MET)}
+    sets = [empty_set, CriteriaSet(ordinal=2, criteria=(real_criterion,))]
+
+    decision = aggregate(sets, results, THRESHOLDS)
+
+    assert decision.outcome is Outcome.ESCALATE
+    assert decision.closest_set == 2
+    assert decision.blocking == ("2",)
+    assert decision.reason is GateReason.CRITERION_NOT_MET
+
+
+def test_all_empty_criteria_sets_still_reports_no_criteria():
+    """The tiebreak among NO_CRITERIA sets still has to land somewhere and stay
+    reproducible: if every set is empty, the closest-set pick must still resolve to
+    the lowest ordinal, not merely to *a* set."""
+    sets = [CriteriaSet(ordinal=2, criteria=()), CriteriaSet(ordinal=1, criteria=())]
+
+    decision = aggregate(sets, {}, THRESHOLDS)
+
+    assert decision.outcome is Outcome.ESCALATE
+    assert decision.closest_set == 1
+    assert decision.reason is GateReason.NO_CRITERIA
+
+
 def test_missing_criterion_result_raises_naming_criterion_and_set():
     """Rule 5. A silently-missing verification must never round down to an approval --
     it must raise, naming both the criterion id and the set ordinal so this is never

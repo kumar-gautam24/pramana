@@ -120,8 +120,16 @@ def aggregate(
         )
 
     # None approved: escalate, naming the closest set -- fewest unmet criteria, ties
-    # broken by lowest ordinal for the same reproducibility reason as above.
-    closest = min(outcomes, key=lambda o: (len(o.unmet), o.ordinal))
+    # broken by lowest ordinal for the same reproducibility reason as above. A set with
+    # no criteria reports zero unmet too (evaluate_gate's NO_CRITERIA case, blocking =
+    # ()), but zero unmet there means unsatisfiable, not nearly satisfied -- an empty
+    # set must never look closer to approval than a real set with an actual unmet
+    # criterion. Ranking NO_CRITERIA sets last (False < True) fixes that; if every set
+    # is empty the pick still lands on one and correctly reports NO_CRITERIA.
+    closest = min(
+        outcomes,
+        key=lambda o: (o.decision.reason is GateReason.NO_CRITERIA, len(o.unmet), o.ordinal),
+    )
     return AggregateDecision(
         outcome=Outcome.ESCALATE,
         reason=closest.decision.reason,
