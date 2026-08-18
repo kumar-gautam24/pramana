@@ -71,6 +71,7 @@ services:
       REDIS_URL: redis://:${REDIS_PASSWORD:-dev-redis-password}@redis:6379
       POLICY_URL: http://policy:8001
       MEMBER_URL: http://member:8005
+      LLM_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:14b-instruct}
     ports: ["${ADJUDICATION_PORT:-8002}:8002"]
     depends_on:

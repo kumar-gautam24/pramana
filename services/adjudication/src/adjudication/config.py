@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     redis_url: str
     policy_url: str
     member_url: str
+    llm_url: str
     llm_model: str
     min_confidence: float = 0.0
 

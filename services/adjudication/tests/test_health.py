@@ -26,7 +26,7 @@ def client() -> TestClient:
 
 
 def _settings(database_url: str) -> Settings:
-    # The other four fields have no meaning yet -- nothing in this task's lifespan reads
+    # The other five fields have no meaning yet -- nothing in this task's lifespan reads
     # them -- but Settings() rejects a missing one regardless, so every caller here must
     # still supply values that merely parse.
     return Settings(
@@ -34,6 +34,7 @@ def _settings(database_url: str) -> Settings:
         redis_url="redis://localhost:6379",
         policy_url="http://localhost:8001",
         member_url="http://localhost:8005",
+        llm_url="http://localhost:11434",
         llm_model="qwen2.5:14b-instruct",
     )
 
