@@ -1,33 +1,23 @@
-"""Async engine and session factory.
+"""The asyncpg pool, the migration runner, and the startup probe.
 
-`create_async_engine` opens no connection, so constructing it proves nothing about the
-URL beyond it being parseable -- a database that does not exist surfaces only on the
-first query. Startup probes the engine (see the lifespan in main.py) so misconfiguration
-fails before the service accepts traffic."""
+`pool()` is created with `min_size=0`, so building it opens no connection and proves
+nothing about the URL. `probe()` is what makes a wrong DATABASE_URL a startup failure
+rather than a 500 on the first query -- see the lifespan in main.py.
+
+This file intentionally duplicates services/member/src/member/db.py rather than sharing
+it from packages/common: a migration runner is infrastructure, not a wire contract, and
+packages/common is reserved for the latter. Two small files that can diverge (this one
+registers the vector codec member never needs) beat a shared dependency that would couple
+the two services' deploy cycles for no gain."""
+
 
 import hashlib
 from pathlib import Path
 
 import asyncpg
 from pgvector.asyncpg import register_vector
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from policy.config import get_settings
-
-engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
-SessionFactory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
-
-# --- ADR-0013: the asyncpg foundation, added alongside the engine above --------------
-#
-# This sweep migrates queries off the engine above one task at a time; until the last
-# one lands, both have to work. Nothing above this line is touched by this change.
-#
-# This file intentionally duplicates services/member/src/member/db.py rather than
-# sharing it from packages/common: a migration runner is infrastructure, not a wire
-# contract, and packages/common is reserved for the latter. Two small files that can
-# diverge (this one registers the vector codec member never needs) beat a shared
-# dependency that would couple the two services' deploy cycles for no gain.
 
 
 class MigrationError(Exception):
@@ -36,10 +26,11 @@ class MigrationError(Exception):
     environments end up silently divergent -- see ADR-0013."""
 
 
-def _asyncpg_dsn(sqlalchemy_url: str) -> str:
-    # Settings holds the SQLAlchemy-style URL because the engine above still needs it;
+def _asyncpg_dsn(configured_url: str) -> str:
+    # Settings still holds a postgresql+asyncpg:// URL because docker-compose and every
+    # deployment sets it that way; converting here keeps those configs working.
     # asyncpg's own DSN parser only accepts the "postgresql://" scheme.
-    return sqlalchemy_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    return configured_url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 
 async def pool(dsn: str | None = None) -> asyncpg.Pool:

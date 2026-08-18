@@ -1,29 +1,24 @@
-"""The asyncpg foundation: pool(), probe(), run_migrations(). Per ADR-0013.
+"""The asyncpg pool, the migration runner, and the startup probe.
 
-The SQLAlchemy engine/`SessionFactory` below are dead code as of this task -- main.py's
-lifespan now probes through `pool()`/`probe()`, and no route or repository imports
-either name any more. They are left in place, unused, because removing them is Task 6's
-job (the same sweep that drops the `sqlalchemy`/`alembic` dependencies from
-pyproject.toml); deleting them here would be a scope creep this task didn't need.
+`pool()` is created with `min_size=0`, so building it opens no connection and proves
+nothing about the URL. `probe()` is what makes a wrong DATABASE_URL a startup failure
+rather than a 500 on the first query -- see the lifespan in main.py.
 
-This file intentionally duplicates services/policy/src/policy/db.py rather than
-sharing it from packages/common: a migration runner is infrastructure, not a wire
-contract, and packages/common is reserved for the latter. Two small files that can
-diverge (member never needs the vector codec policy does) beat a shared dependency
-that would couple the two services' deploy cycles for no gain."""
+This file intentionally duplicates services/member/src/member/db.py rather than sharing
+it from packages/common: a migration runner is infrastructure, not a wire contract, and
+packages/common is reserved for the latter. Two small files that can diverge (this one
+registers the vector codec member never needs) beat a shared dependency that would couple
+the two services' deploy cycles for no gain."""
+
 
 import hashlib
 from pathlib import Path
 
 import asyncpg
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from member.config import get_settings
 
 # Unused (see module docstring) -- kept only because removing it is Task 6's job.
-engine = create_async_engine(get_settings().database_url, pool_pre_ping=True)
-SessionFactory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
-
 
 class MigrationError(Exception):
     """Recorded migration history and the migrations/ directory disagree. Raised
@@ -31,10 +26,11 @@ class MigrationError(Exception):
     environments end up silently divergent -- see ADR-0013."""
 
 
-def _asyncpg_dsn(sqlalchemy_url: str) -> str:
-    # Settings holds the SQLAlchemy-style URL because the engine above still needs it;
+def _asyncpg_dsn(configured_url: str) -> str:
+    # Settings still holds a postgresql+asyncpg:// URL because docker-compose and every
+    # deployment sets it that way; converting here keeps those configs working.
     # asyncpg's own DSN parser only accepts the "postgresql://" scheme.
-    return sqlalchemy_url.replace("postgresql+asyncpg://", "postgresql://", 1)
+    return configured_url.replace("postgresql+asyncpg://", "postgresql://", 1)
 
 
 async def pool(dsn: str | None = None) -> asyncpg.Pool:

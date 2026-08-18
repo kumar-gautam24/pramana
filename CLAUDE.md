@@ -112,7 +112,10 @@ column that six code paths update is not, however few lines it takes.
 
 ```bash
 docker compose up -d --build
-for s in policy adjudication evals auth member; do docker compose exec -T $s alembic upgrade head; done
+# Migrations run out of band, not from a service lifespan: a replica that migrates on
+# boot turns a schema change into something that happens whenever a container restarts.
+cd services/policy && uv run python ../../scripts/migrate.py \
+    postgresql://pramana:pramana@localhost:5432/pramana_policy migrations
 docker compose exec -T <service> pytest
 cd apps/web && npm run dev
 ```
