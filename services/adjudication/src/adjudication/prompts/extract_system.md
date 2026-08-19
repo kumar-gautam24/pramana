@@ -32,7 +32,10 @@ Every criterion you emit must have:
 - `enum`: the fact must be one of a fixed set of values. `params` is
   `{{"fact": <fact>, "allowed": [<string>, ...]}}`, and `allowed` must be a non-empty
   list of strings (every fact usable here is string-valued -- codes, category names,
-  a status word -- never a number). Facts: {enum_facts}.
+  a status word -- never a number). Where a fact lists its permitted values below,
+  `allowed` must contain only those exact strings: they are the values the member
+  record actually holds, and the policy's own wording for the same thing will not
+  match. Translate the policy's words into them. Facts: {enum_facts}.
 - `temporal`: a date fact must fall within a window measured from the case's date of
   service. `params` is `{{"fact": <fact>, "operator": <operator>, "value": <days>}}`,
   where `operator` is exactly one of {temporal_operators} and `value` is a positive

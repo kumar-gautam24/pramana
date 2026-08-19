@@ -321,7 +321,11 @@ def _minimal_params(fact: str, criterion_type: CriterionType) -> dict:
         params["operator"] = ">="
         params["value"] = 1
     elif criterion_type is CriterionType.ENUM:
-        params["allowed"] = ["x"]
+        # Drawn from the fact's own vocabulary where it has one: a placeholder would now
+        # be rejected by the permitted-values rule, and this test is isolating the
+        # permitted-*types* check from every other rule.
+        permitted = spec.permitted_values
+        params["allowed"] = [sorted(permitted)[0]] if permitted else ["x"]
     elif criterion_type is CriterionType.TEMPORAL:
         params["operator"] = "within_days_before"
         params["value"] = 1
@@ -425,3 +429,74 @@ def test_facts_declare_a_datatype_consistent_with_their_permitted_types():
             assert spec.datatype is FactDataType.NUMBER, fact
         if CriterionType.ENUM in spec.permitted_types:
             assert spec.datatype is FactDataType.STRING, fact
+
+
+# --- enum vocabularies -------------------------------------------------------------
+#
+# These exist because of a defect a real model produced against the real corpus: asked to
+# decompose NCD 240.4, it emitted a correct test_type criterion whose `allowed` list was
+# in the policy's words ("attended PSG", "Type II HST") while the member record holds
+# `home_type_ii`. Both sides were right and shared no value, so every case escalated on a
+# criterion that was actually met. The hand-authored fixture never caught it because it
+# used the verifier's vocabulary by construction.
+
+
+def test_a_policys_own_wording_for_a_closed_fact_is_rejected():
+    """The exact defect, pinned. It must fail loudly at extraction rather than quietly
+    at verification, because a silent NOT_MET is indistinguishable from a real one."""
+    with pytest.raises(ExtractionInvalid) as excinfo:
+        validate_params(
+            CriterionType.ENUM,
+            {"fact": "test_type", "allowed": ["attended PSG", "Type II HST"]},
+        )
+
+    assert "attended PSG" in str(excinfo.value)
+    assert "home_type_ii" in str(excinfo.value)
+
+
+def test_the_member_records_own_vocabulary_is_accepted():
+    validate_params(
+        CriterionType.ENUM,
+        {"fact": "test_type", "allowed": ["home_type_ii", "home_type_iii"]},
+    )
+
+
+def test_one_bad_value_among_good_ones_is_still_rejected():
+    """A partially-correct list is the likelier failure than a wholly wrong one, and it
+    is the one that would otherwise half-work."""
+    with pytest.raises(ExtractionInvalid):
+        validate_params(
+            CriterionType.ENUM,
+            {"fact": "test_type", "allowed": ["home_type_ii", "attended PSG"]},
+        )
+
+
+def test_condition_codes_stays_open():
+    """SNOMED is unbounded. Enumerating only the codes in the seeded corpus would reject
+    a correct criterion about any condition no test member happens to have."""
+    validate_params(
+        CriterionType.ENUM,
+        {"fact": "condition_codes", "allowed": ["53741008", "999999999"]},
+    )
+
+
+def test_coverage_active_vocabulary_matches_the_client_it_describes():
+    """The anti-drift guard. `domain/` is pure and must not import a service module, so
+    the two declarations are separate by design -- this is the one place they are
+    compared, and it is where the import is legitimate."""
+    from adjudication.services.member_client import CoverageStatus
+
+    assert FACTS["coverage_active"].permitted_values == {s.value for s in CoverageStatus}
+
+
+def test_every_closed_vocabulary_is_reachable_from_the_prompt():
+    """A vocabulary the model is never shown is a vocabulary it cannot use, and the
+    rejection above would then fire on every extraction instead of catching a mistake."""
+    from adjudication.services.extract import _build_system_prompt
+
+    prompt = _build_system_prompt()
+    for name, spec in FACTS.items():
+        if spec.permitted_values is None:
+            continue
+        for value in spec.permitted_values:
+            assert value in prompt, f"{name}'s value {value!r} is missing from the prompt"

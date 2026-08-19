@@ -60,6 +60,25 @@ class FactSpec:
     #: beyond the case's date of service. Empty for every fact answerable from a
     #: single `before`/`on` cutoff.
     fetch_args: dict[str, type] = field(default_factory=dict)
+    #: The closed set of values this fact can actually hold in the member record, for
+    #: facts whose vocabulary is closed. `None` means genuinely open -- see
+    #: `condition_codes`.
+    #:
+    #: This exists because of a defect a real model produced on the real corpus. Asked
+    #: to decompose NCD 240.4, it emitted a correct `test_type` criterion whose `allowed`
+    #: list was written in the *policy's* words -- "attended PSG", "Type II HST" -- while
+    #: the member service stores `home_type_ii`. Both sides were individually right and
+    #: shared not one value, so the enum verifier returned NOT_MET for every member and
+    #: every case escalated. No test saw it: the hand-authored fixture happened to use
+    #: the verifier's vocabulary.
+    #:
+    #: Naming the vocabulary here lets the prompt show the model exactly which strings
+    #: exist and lets `_validate_enum` reject anything else, so a model writing policy
+    #: prose produces a loud `ExtractionInvalid` -- and an escalation that says the
+    #: system could not read the policy -- instead of a silent, confident "not met"
+    #: about a study that was in fact valid. Same discipline as `source_chunk_id`'s
+    #: closed enum in `services.extract`: constrain the answer, then check it anyway.
+    permitted_values: frozenset[str] | None = None
 
 
 #: The complete map of facts the member service can answer a question about -- the
@@ -96,8 +115,32 @@ FACTS: dict[str, FactSpec] = {
     "channels": FactSpec(FactDataType.NUMBER, frozenset({CriterionType.THRESHOLD})),
     "apnea_events": FactSpec(FactDataType.NUMBER, frozenset({CriterionType.THRESHOLD})),
     "recorded_hours": FactSpec(FactDataType.NUMBER, frozenset({CriterionType.THRESHOLD})),
-    "test_type": FactSpec(FactDataType.STRING, frozenset({CriterionType.ENUM})),
+    # Source of truth is `member`'s `domain/generate.py`: the four types in `_TEST_TYPES`
+    # plus `actigraphy`, which that module emits deliberately for its `invalid_test_type`
+    # target. Adjudication already depends on that service's fact *names*; depending on
+    # this one fact's values is the same wire contract, and `test_type` is the one enum
+    # fact whose vocabulary is closed but not derivable from a shared type (it is a bare
+    # `str` on `SleepStudy`).
+    #
+    # `actigraphy` is listed even though no policy would ever accept such a study,
+    # because this table describes what the member record can *hold*, not what a policy
+    # may approve. Which study types qualify is the extracted criteria's business
+    # (invariant 3: nothing here branches on a policy). Pruning it to the "acceptable"
+    # four would be a policy judgment smuggled into a fact declaration -- and it was
+    # exactly that kind of quiet assumption, made from the seeded rows rather than from
+    # the generator, that made the first draft of this line wrong.
+    "test_type": FactSpec(
+        FactDataType.STRING,
+        frozenset({CriterionType.ENUM}),
+        permitted_values=frozenset(
+            {"attended_psg", "home_type_ii", "home_type_iii", "home_type_iv", "actigraphy"}
+        ),
+    ),
     "study_date": FactSpec(FactDataType.DATE, frozenset({CriterionType.TEMPORAL})),
+    # Deliberately open: SNOMED is an unbounded vocabulary, and enumerating only the
+    # codes that happen to be in the seeded corpus would reject a correct criterion about
+    # any condition no test member has -- turning a coverage question into an artefact of
+    # the fixture data. The `allowed` list here is a query, not a claim about what exists.
     "condition_codes": FactSpec(FactDataType.STRING, frozenset({CriterionType.ENUM})),
     "adherence_fraction": FactSpec(
         FactDataType.NUMBER,
@@ -109,7 +152,14 @@ FACTS: dict[str, FactSpec] = {
         frozenset({CriterionType.THRESHOLD}),
         fetch_args={"min_hours": float, "window_days": int},
     ),
-    "coverage_active": FactSpec(FactDataType.STRING, frozenset({CriterionType.ENUM})),
+    # `CoverageStatus`'s three members. Not imported from `services.member_client`:
+    # `domain/` is pure and must not depend on a service module. `tests/test_params.py`
+    # asserts the two agree, which is where that import is legitimate.
+    "coverage_active": FactSpec(
+        FactDataType.STRING,
+        frozenset({CriterionType.ENUM}),
+        permitted_values=frozenset({"active", "inactive", "no_record"}),
+    ),
 }
 
 #: Carried explicitly rather than parsed out of prose -- the >=-vs-> distinction has
@@ -232,6 +282,15 @@ def _validate_enum(params: dict[str, Any]) -> None:
         raise ExtractionInvalid(
             f"enum criterion needs a non-empty list of {datatype.value} values, got {allowed!r}"
         )
+    permitted = FACTS[fact].permitted_values
+    if permitted is not None:
+        unknown = [member for member in allowed if member not in permitted]
+        if unknown:
+            raise ExtractionInvalid(
+                f"enum criterion on {fact!r} allows {unknown!r}, which the member record "
+                f"cannot hold -- permitted values are {sorted(permitted)}"
+            )
+
     _validate_fact_args(params, fact, CriterionType.ENUM)
     _reject_unexpected_keys(params, CriterionType.ENUM, {"fact", "allowed", "fact_args"})
 

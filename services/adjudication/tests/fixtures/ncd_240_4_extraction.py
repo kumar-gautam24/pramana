@@ -140,7 +140,13 @@ HITS = [
 
 #: The four sleep-test modalities the diagnosis paragraph accepts, in
 #: `member_client`'s `SleepStudy.test_type` vocabulary.
-VALID_TEST_TYPES = ["psg", "home_type_ii", "home_type_iii", "home_type_iv"]
+# `attended_psg`, not `psg`: this fixture said `psg` for as long as it existed, and
+# nothing could catch it -- the fixture was the only description of the vocabulary,
+# so it agreed with itself. `domain.params.FACTS["test_type"].permitted_values` now
+# holds the vocabulary `member`'s generator actually emits, and validation rejects
+# anything else, which is what turned this into a failing test rather than a silent
+# NOT_MET on every case.
+VALID_TEST_TYPES = ["attended_psg", "home_type_ii", "home_type_iii", "home_type_iv"]
 
 _DIAGNOSIS_CRITERION = {
     "text": "Diagnosis includes a clinical evaluation and a positive PSG or Type II/III/IV HST",

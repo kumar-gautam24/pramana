@@ -116,9 +116,19 @@ def _describe_fact_args(criterion_type: CriterionType) -> str:
     for fact_name, spec in sorted(FACTS.items()):
         if criterion_type not in spec.permitted_types:
             continue
+        qualifiers = []
         if spec.fetch_args:
             shape = ", ".join(f'"{key}": <{typ.__name__}>' for key, typ in spec.fetch_args.items())
-            parts.append(f'`{fact_name}` (requires `"fact_args": {{{shape}}}`)')
+            qualifiers.append(f'requires `"fact_args": {{{shape}}}`')
+        if spec.permitted_values is not None:
+            # Shown inline at the point the model picks the fact, for the same reason
+            # fetch_args is: a vocabulary introduced separately gets skipped. Without
+            # this the model writes the policy's words ("attended PSG") where the record
+            # holds `home_type_ii`, and every case escalates on a criterion that was met.
+            listed = ", ".join(f"`{value}`" for value in sorted(spec.permitted_values))
+            qualifiers.append(f"`allowed` must be drawn from exactly: {listed}")
+        if qualifiers:
+            parts.append(f"`{fact_name}` ({'; '.join(qualifiers)})")
         else:
             parts.append(f"`{fact_name}`")
     return ", ".join(parts)

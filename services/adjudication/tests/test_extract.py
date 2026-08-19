@@ -442,7 +442,7 @@ _VALID_CRITERIA_BY_TYPE = {
     CriterionType.ENUM: {
         "text": "Positive PSG",
         "type": "enum",
-        "params": {"fact": "test_type", "allowed": ["psg", "home_type_ii"]},
+        "params": {"fact": "test_type", "allowed": ["attended_psg", "home_type_ii"]},
         "source_chunk_id": 57,
     },
     CriterionType.TEMPORAL: {
