@@ -175,6 +175,27 @@ def test_startup_succeeds_when_every_dependency_is_reachable_and_the_llm_guard_i
     assert response.status_code == 200
 
 
+async def test_probe_upstream_rejects_a_non_200_response():
+    """Unlike the unreachable-port tests above (a connection failure), this is the
+    other way `probe_upstream` must fail: the port answers, but not with a healthy
+    200 -- a service that is up but unready, or a wrong path entirely."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(startup.StartupProbeError, match="status 503"):
+            await startup.probe_upstream(client, "http://policy.example", "policy")
+
+
+async def test_probe_upstream_accepts_a_200_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        await startup.probe_upstream(client, "http://policy.example", "policy")  # no raise
+
+
 async def test_probe_llm_accepts_a_provider_that_honours_the_schema():
     """The guard's positive case, at the unit level via a stub transport: no live
     model, no network, matching decision 3."""
