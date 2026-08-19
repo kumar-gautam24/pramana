@@ -74,9 +74,10 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
       LLM_URL: ${LLM_URL:-http://host.docker.internal:11434}
       LLM_MODEL: ${LLM_MODEL:-qwen2.5:14b-instruct}
-      # Empty unless LLM_PROVIDER=gemini, and rejected at startup if it is set to
-      # gemini without one -- see adjudication/config.py.
+      # Each is empty unless its own provider is selected, and a provider selected
+      # without its key is rejected at startup -- see adjudication/config.py.
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
     ports: ["${ADJUDICATION_PORT:-8002}:8002"]
     depends_on:
       db:

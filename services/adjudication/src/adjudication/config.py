@@ -23,6 +23,7 @@ class Provider(StrEnum):
 
     OLLAMA = "ollama"
     GEMINI = "gemini"
+    GROQ = "groq"
 
 
 class Settings(BaseSettings):
@@ -33,8 +34,12 @@ class Settings(BaseSettings):
     llm_provider: Provider = Provider.OLLAMA
     llm_url: str
     llm_model: str
-    #: Required when `llm_provider` is `gemini`, unused otherwise -- see the validator.
+    #: Each is required only when its own provider is selected -- see the validator.
+    #: Named after the environment variables they come from rather than folded into one
+    #: `llm_api_key`, so a machine can hold credentials for several providers at once
+    #: and switching between them is `LLM_PROVIDER` alone.
     gemini_api_key: str | None = None
+    groq_api_key: str | None = None
     min_confidence: float = 0.0
 
     @model_validator(mode="after")
@@ -43,8 +48,12 @@ class Settings(BaseSettings):
         # mid-case leaves that case escalated for a reason that has nothing to do with
         # the member's record, which is exactly the confusion the startup-probe rule
         # exists to prevent.
-        if self.llm_provider is Provider.GEMINI and not self.gemini_api_key:
-            raise ValueError("GEMINI_API_KEY is required when LLM_PROVIDER=gemini")
+        required = {
+            Provider.GEMINI: ("GEMINI_API_KEY", self.gemini_api_key),
+            Provider.GROQ: ("GROQ_API_KEY", self.groq_api_key),
+        }.get(self.llm_provider)
+        if required and not required[1]:
+            raise ValueError(f"{required[0]} is required when LLM_PROVIDER={self.llm_provider}")
         return self
 
 

@@ -55,14 +55,21 @@ async def send(
 def parse[T](service: str, response: httpx.Response, path: str, build: Callable[[object], T]) -> T:
     """Turn a 2xx response into a typed value via `build`, raising
     `UpstreamUnavailable` for a non-2xx status or for a body `build` cannot make sense
-    of -- bad JSON, a missing key, a dataclass called with the wrong arguments, or a
-    pydantic model that fails validation. `json.JSONDecodeError` and
-    `pydantic.ValidationError` both subclass `ValueError`, so one except clause covers
-    every parse failure the two clients hit in practice."""
+    of -- bad JSON, a missing key, an empty list where an element was expected, a
+    dataclass called with the wrong arguments, or a pydantic model that fails
+    validation. `json.JSONDecodeError` and `pydantic.ValidationError` both subclass
+    `ValueError`, so one except clause covers every parse failure these clients hit.
+
+    `IndexError` is in the list because of a shape the model providers produce and the
+    two service clients do not: a 200 carrying `{"choices": []}` or
+    `{"candidates": []}` -- what a provider returns when a safety filter suppressed
+    the answer. Without it that body raises out of the pipeline uncaught, and an
+    uncaught exception there leaves the case stuck in `running` with nothing in
+    `case_events` saying why, which is the failure this whole helper exists to avoid."""
     if response.status_code // 100 != 2:
         raise UpstreamUnavailable(service, f"status {response.status_code}")
     try:
         return build(response.json())
-    except (ValueError, KeyError, TypeError) as exc:
+    except (ValueError, KeyError, TypeError, IndexError) as exc:
         detail = f"unparseable response from {path}: {type(exc).__name__}: {exc}"
         raise UpstreamUnavailable(service, detail) from exc

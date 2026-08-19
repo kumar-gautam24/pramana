@@ -13,7 +13,12 @@ import httpx
 import pytest
 
 from adjudication.config import Provider, Settings
-from adjudication.services.llm import GeminiClient, OllamaClient, build_provider
+from adjudication.services.llm import (
+    GeminiClient,
+    OllamaClient,
+    OpenAICompatibleClient,
+    build_provider,
+)
 from adjudication.services.upstream import UpstreamUnavailable
 
 BASE_URL = "http://testserver"
@@ -269,11 +274,18 @@ async def test_gemini_truncated_answer_raises_rather_than_returning_half_a_case(
             await GeminiClient(client, BASE_URL, GEMINI_MODEL, API_KEY).chat([], {})
 
 
-async def test_gemini_response_missing_candidates_raises():
-    """A safety block returns a 200 with no candidates. Silence is not an extraction."""
+@pytest.mark.parametrize(
+    "body",
+    [{"promptFeedback": {"blockReason": "SAFETY"}}, {"candidates": []}],
+    ids=["no-candidates-key", "empty-candidates-list"],
+)
+async def test_gemini_response_without_a_candidate_raises(body):
+    """A safety block returns a 200 with no answer -- sometimes as a missing key,
+    sometimes as an empty list. Silence is not an extraction, and the empty-list shape
+    raises IndexError rather than KeyError, which `upstream.parse` must also catch."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"promptFeedback": {"blockReason": "SAFETY"}})
+        return httpx.Response(200, json=body)
 
     async with _client(handler) as client:
         with pytest.raises(UpstreamUnavailable):
@@ -320,3 +332,142 @@ def test_gemini_without_a_key_is_rejected_at_settings_time():
         _settings(llm_provider=Provider.GEMINI)
 
     assert "GEMINI_API_KEY" in str(excinfo.value)
+
+
+# --- OpenAICompatibleClient (Groq and anything else speaking that dialect) ----------
+
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+def _openai_response(payload: object) -> httpx.Response:
+    return httpx.Response(
+        200, json={"choices": [{"message": {"content": json.dumps(payload)}}]}
+    )
+
+
+async def test_openai_compatible_sends_the_schema_unmodified_without_strict():
+    """`strict` must stay off: it requires every object to close `additionalProperties`
+    and list every property in `required`, and `extract`'s `params` is deliberately
+    open. Turning it on would reject the real extraction schema."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        captured["headers"] = request.headers
+        return _openai_response({"sets": []})
+
+    schema = {
+        "$defs": {"C": {"type": "object", "properties": {"p": {"type": "object"}}}},
+        "type": "object",
+        "properties": {"sets": {"type": "array", "items": {"$ref": "#/$defs/C"}}},
+    }
+    async with _client(handler) as client:
+        await OpenAICompatibleClient(client, BASE_URL, GROQ_MODEL, API_KEY).chat(
+            [{"role": "user", "content": "hi"}], schema
+        )
+
+    response_format = captured["body"]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["schema"] == schema
+    assert "strict" not in response_format["json_schema"]
+    assert captured["body"]["temperature"] == 0
+    assert captured["body"]["model"] == GROQ_MODEL
+    assert captured["headers"]["authorization"] == f"Bearer {API_KEY}"
+
+
+async def test_openai_compatible_passes_messages_through_unchanged():
+    """This dialect carries system turns in the message list, so unlike Gemini there is
+    nothing to split out -- and nothing that may quietly reorder them."""
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return _openai_response({"sets": []})
+
+    messages = [
+        {"role": "system", "content": "you extract criteria"},
+        {"role": "user", "content": "the policy text"},
+    ]
+    async with _client(handler) as client:
+        await OpenAICompatibleClient(client, BASE_URL, GROQ_MODEL, API_KEY).chat(messages, {})
+
+    assert captured["body"]["messages"] == messages
+
+
+async def test_openai_compatible_reads_content_not_reasoning():
+    """A reasoning model returns its deliberation in a sibling `reasoning` field.
+    Concatenating the message would hand a paragraph of prose to `json.loads`."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "reasoning": "the schema wants sets, so I will emit...",
+                            "content": json.dumps({"sets": [{"criteria": []}]}),
+                        }
+                    }
+                ]
+            },
+        )
+
+    async with _client(handler) as client:
+        result = await OpenAICompatibleClient(client, BASE_URL, GROQ_MODEL, API_KEY).chat([], {})
+
+    assert result == {"sets": [{"criteria": []}]}
+
+
+async def test_openai_compatible_surfaces_the_api_error_message():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400, json={"error": {"message": "response_format schema is invalid"}}
+        )
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable) as excinfo:
+            await OpenAICompatibleClient(client, BASE_URL, GROQ_MODEL, API_KEY).chat([], {})
+
+    assert "response_format schema is invalid" in excinfo.value.detail
+
+
+async def test_openai_compatible_truncated_answer_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": '{"sets": [{'}}]})
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable):
+            await OpenAICompatibleClient(client, BASE_URL, GROQ_MODEL, API_KEY).chat([], {})
+
+
+async def test_openai_compatible_empty_choices_raises():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": []})
+
+    async with _client(handler) as client:
+        with pytest.raises(UpstreamUnavailable):
+            await OpenAICompatibleClient(client, BASE_URL, GROQ_MODEL, API_KEY).chat([], {})
+
+
+def test_build_provider_returns_the_openai_dialect_for_groq():
+    settings = _settings(
+        llm_provider=Provider.GROQ, llm_model=GROQ_MODEL, groq_api_key=API_KEY
+    )
+    assert isinstance(build_provider(settings, httpx.AsyncClient()), OpenAICompatibleClient)
+
+
+def test_groq_without_a_key_is_rejected_at_settings_time():
+    with pytest.raises(ValueError) as excinfo:
+        _settings(llm_provider=Provider.GROQ)
+
+    assert "GROQ_API_KEY" in str(excinfo.value)
+
+
+def test_a_providers_key_is_not_accepted_in_place_of_anothers():
+    """Holding credentials for several providers at once is the point of naming them
+    separately -- but a gemini key must not satisfy a groq configuration."""
+    with pytest.raises(ValueError) as excinfo:
+        _settings(llm_provider=Provider.GROQ, gemini_api_key=API_KEY)
+
+    assert "GROQ_API_KEY" in str(excinfo.value)
