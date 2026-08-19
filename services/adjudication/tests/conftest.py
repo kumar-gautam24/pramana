@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pytest
+import redis.asyncio as redis
 
 from adjudication.db import pool, run_migrations
 
@@ -13,6 +14,18 @@ TEST_DATABASE_DSN = os.environ.get(
     # isolate reads, so pointing tests at the real database would let a test see rows
     # it never inserted.
     "postgresql://pramana:pramana@localhost:5432/pramana_adjudication_test",
+)
+
+#: The same Redis this dev environment's docker compose already runs (see
+#: docker-compose.yml), host-mapped rather than a second instance stood up for tests:
+#: there is no lighter-weight way to prove the Stream/Pub-Sub mechanics in worker.py
+#: and repositories/case_events.py actually work than talking to a real Redis -- the
+#: same posture TEST_DATABASE_DSN above takes with Postgres. Tests that use it name
+#: their own stream/group/channel (a fresh uuid4 each time) rather than the production
+#: constants in services/queue.py, since there is no per-test rollback for Redis the
+#: way db_session gives Postgres.
+TEST_REDIS_URL = os.environ.get(
+    "TEST_REDIS_URL", "redis://:dev-redis-password@localhost:6380"
 )
 
 
@@ -52,3 +65,19 @@ async def db_session(db_pool):
             yield connection
         finally:
             await transaction.rollback()
+
+
+@pytest.fixture
+async def redis_client():
+    """A real client against TEST_REDIS_URL. Closed after each test; the keys a test
+    creates (its own uuid4-named stream/group/channel -- see TEST_REDIS_URL's own
+    comment) are left behind rather than cleaned up, the same accepted cost
+    tests/test_pipeline.py's module docstring documents for `case_events` rows: nothing
+    a later test reads is scoped to another test's random name, so accumulation is
+    harmless."""
+    # decode_responses=True to match how main.py and worker.py both construct their
+    # own clients -- str throughout is what worker.py's field access and
+    # case_events.py's publish/subscribe are written against.
+    client = redis.Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+    yield client
+    await client.aclose()

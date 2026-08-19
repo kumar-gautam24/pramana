@@ -5,12 +5,22 @@ TestClient built with specific settings, neither of which can catch a wrong path
 a wrong method, or a dropped `app.include_router(...)` in main.py -- all of which would
 leave the suite green while the service 404s to everything.
 
-Both current routes take neither a body nor a query parameter, so the 422-that-proves-
-resolution trick services/policy and services/member use does not apply here -- there is
-nothing for FastAPI to reject before the handler runs. The discriminator is instead
+/health and /ready take neither a body nor a query parameter, so the 422-that-proves-
+resolution trick services/policy and services/member use does not apply to them -- there
+is nothing for FastAPI to reject before the handler runs. Their discriminator is instead
 404-vs-not-404: /ready's handler catches every exception from an unconfigured or
 unreachable database and turns it into a 503, so a registered route never surfaces as a
-404 regardless of environment. Method mismatches still 405, independent of both."""
+404 regardless of environment. Method mismatches still 405, independent of both.
+
+POST /cases does take a body (`routers/cases.CaseCreate`), validated by FastAPI before
+the handler ever runs -- so the 422 trick applies to it directly, and it is proof enough
+that this app is never entered as a `with TestClient(app)` context here: no lifespan
+runs, so `app.state.pool`/`.redis` are never set. GET /cases/{id}, .../events and
+.../stream are deliberately not in ROUTES below for that reason -- their handlers read
+`request.app.state.pool` on the very first line, and would raise an unhandled
+AttributeError rather than answer 404/422 the moment they actually ran. Their wiring is
+proven instead by tests/test_routes.py, which runs the real app (with app.state
+assigned) end-to-end against every one of them."""
 
 import pytest
 from fastapi.testclient import TestClient
@@ -26,6 +36,7 @@ NOT_FOUND_BODY = {"detail": "Not Found"}
 ROUTES = [
     ("get", "/health"),
     ("get", "/ready"),
+    ("post", "/cases"),
 ]
 
 

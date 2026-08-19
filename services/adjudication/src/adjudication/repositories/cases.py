@@ -12,7 +12,7 @@ from adjudication.models.case import Case
 
 _COLUMNS = (
     "id, member_id, requested_code, icd10, date_of_service, kind, status, created_at, "
-    "request_text"
+    "request_text, idempotency_key"
 )
 
 
@@ -30,6 +30,7 @@ def _row_to_case(row: asyncpg.Record) -> Case:
         status=row["status"],
         created_at=row["created_at"],
         request_text=row["request_text"],
+        idempotency_key=row["idempotency_key"],
     )
 
 
@@ -42,17 +43,27 @@ async def insert(
     date_of_service,
     kind: str,
     request_text: str | None = None,
+    idempotency_key: str | None = None,
 ) -> Case:
     """`status` is left to its column default (`queued`) -- Task 8's `POST /cases`
     enqueues a case before anything has run, and the pipeline itself is what advances
     it via `update_status` below. `request_text` defaults to `None`: most callers of
     this function today (every test that doesn't care about retrieval quality) have no
     narrative to give it, and the column is nullable for exactly that reason
-    (migrations/0002_cases_request_text.sql)."""
+    (migrations/0002_cases_request_text.sql).
+
+    Raises `asyncpg.UniqueViolationError` (constraint `uq_cases_idempotency_key`) if
+    `idempotency_key` is not `None` and already belongs to another case -- this
+    function does not catch it. `services.intake.submit_case` is where that violation
+    becomes "return the existing case" instead of a 500 (task-8 brief, decision 1);
+    this module stays a plain insert, consistent with every other repository here."""
     row = await conn.fetchrow(
         f"""
-        INSERT INTO cases (member_id, requested_code, icd10, date_of_service, kind, request_text)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO cases (
+            member_id, requested_code, icd10, date_of_service, kind, request_text,
+            idempotency_key
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
         RETURNING {_COLUMNS}
         """,
         member_id,
@@ -61,12 +72,23 @@ async def insert(
         date_of_service,
         kind,
         request_text,
+        idempotency_key,
     )
     return _row_to_case(row)
 
 
 async def get(conn, case_id: str) -> Case | None:
     row = await conn.fetchrow(f"SELECT {_COLUMNS} FROM cases WHERE id = $1", case_id)
+    return _row_to_case(row) if row is not None else None
+
+
+async def get_by_idempotency_key(conn, idempotency_key: str) -> Case | None:
+    """The lookup `services.intake.submit_case` uses after `insert` above raises on a
+    repeated key, to answer a retried `POST /cases` with the case that retry's first
+    attempt actually created."""
+    row = await conn.fetchrow(
+        f"SELECT {_COLUMNS} FROM cases WHERE idempotency_key = $1", idempotency_key
+    )
     return _row_to_case(row) if row is not None else None
 
 

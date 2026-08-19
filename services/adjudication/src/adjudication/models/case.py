@@ -26,3 +26,8 @@ class Case:
     #: requested (migrations/0002_cases_request_text.sql). Defaulted so every existing
     #: construction of a `Case` -- in tests and elsewhere -- keeps working unchanged.
     request_text: str | None = None
+    #: A caller-supplied key that makes a retried POST /cases return this same row
+    #: instead of creating a second one (migrations/0003_cases_idempotency_key.sql,
+    #: task-8 brief decision 1). None for every case with no idempotency concern of its
+    #: own -- the column's UNIQUE constraint permits any number of NULLs.
+    idempotency_key: str | None = None

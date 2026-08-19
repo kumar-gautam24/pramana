@@ -2,8 +2,9 @@
 
 A bad configuration must stop the service from starting rather than surface as a failed
 request an hour later, so there are no defaults for values that have no safe default.
-`min_confidence` is the one exception: 0.0 reproduces `GateThresholds`' own default (the
-confidence check disabled), so a deployment that never sets it gets the gate's documented
+`min_confidence` and `probe_llm_on_startup` are the two exceptions: 0.0 reproduces
+`GateThresholds`' own default (the confidence check disabled), and `True` reproduces
+ADR-0010's guard being on, so a deployment that never sets either gets the documented
 behaviour rather than an import-time failure over a value that already has a safe one."""
 
 from enum import StrEnum
@@ -41,6 +42,13 @@ class Settings(BaseSettings):
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
     min_confidence: float = 0.0
+    #: ADR-0010's startup guard ("services refuse to start if the configured model
+    #: cannot produce schema-constrained output") is on by default -- a deployment
+    #: that never sets this gets the documented behaviour. Task 8's own suite is what
+    #: needs it off: the whole test suite must stay runnable on a machine with no model
+    #: and no network (task-8 brief, decision 3), and every model-backed test already
+    #: stubs the provider rather than depending on one being reachable.
+    probe_llm_on_startup: bool = True
 
     @model_validator(mode="after")
     def _provider_credentials_present(self) -> "Settings":

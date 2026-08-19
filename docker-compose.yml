@@ -83,6 +83,33 @@ services:
       db:
         condition: service_healthy
 
+  # Consumes the Redis stream POST /cases enqueues onto and runs each case through the
+  # pipeline -- see services/adjudication/src/adjudication/worker.py's module
+  # docstring. Its own container, not a background task inside `adjudication`'s
+  # lifespan, so the HTTP process and the worker restart and redeploy independently.
+  # Same image, same environment as `adjudication`: it is the same service's other
+  # process, not a second configuration to keep in sync by hand.
+  adjudication-worker:
+    build:
+      context: .
+      dockerfile: services/adjudication/Dockerfile
+    command: ["python", "-m", "adjudication.worker"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pramana:pramana@db:5432/pramana_adjudication
+      REDIS_URL: redis://:${REDIS_PASSWORD:-dev-redis-password}@redis:6379
+      POLICY_URL: http://policy:8001
+      MEMBER_URL: http://member:8005
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_URL: ${LLM_URL:-http://host.docker.internal:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:14b-instruct}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:
