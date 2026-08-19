@@ -4,7 +4,21 @@
 `insert_many` is the only entry point: it returns `domain.criteria_sets.CriteriaSet`
 objects directly, with the database-assigned ids `services/verify.verify` and
 `domain.criteria_sets.aggregate` both need, rather than handing back bare `Criterion`
-rows the pipeline would have to regroup by `set_ordinal` itself."""
+rows the pipeline would have to regroup by `set_ordinal` itself.
+
+Re-adjudication (finding 1, fix round 1): `insert_many` deletes `case_id`'s existing
+criteria before inserting the fresh set, so a second `adjudicate(case_id)` -- which
+Task 8's at-least-once Redis stream guarantees will happen -- gets a clean run instead
+of colliding with the first run's rows on `uq_criteria_case_set_ordinal`. The caller
+(`services/pipeline.py`) runs the delete and every insert inside one transaction, so a
+mid-loop failure rolls back to the *previous* run's rows rather than leaving a mix of
+old and half-written new ones. `ON DELETE CASCADE` from `criteria` to
+`criterion_results` takes the superseded run's results with it for free. Superseded
+`determinations` rows are untouched -- they are the case's history, not its working
+state -- so an old determination's `blocking` array may name a criterion id that no
+longer resolves after a later run; that is an accepted cost of "delete-then-insert" over
+versioning the attempt, and `determinations.created_at` still places the row correctly
+in the case's history regardless."""
 
 import json
 
@@ -44,7 +58,13 @@ async def insert_many(conn, case_id: str, sets: list[ExtractedSet]) -> list[Crit
     One INSERT per row rather than a bulk statement: asyncpg's batch protocol has no
     RETURNING equivalent, and the pipeline needs the assigned id of every row back --
     the same tradeoff `policy.repositories.chunks.insert_many` makes, over a corpus of
-    comparable size (a handful of criteria per case)."""
+    comparable size (a handful of criteria per case).
+
+    `conn` must be a connection already inside the caller's transaction, not the bare
+    pool -- see this module's docstring on why the delete below and every insert that
+    follows must commit or roll back together."""
+    await conn.execute("DELETE FROM criteria WHERE case_id = $1", case_id)
+
     criteria_sets = []
     for extracted_set in sets:
         criteria = []

@@ -1,0 +1,15 @@
+-- Task-7 fix round 1, approved change: the policy-search query built from
+-- `requested_code`/`icd10` alone (`f"{code} {icd10}"`) does not retrieve the chunks
+-- that decide a case -- codes are out of distribution for a cross-encoder trained on
+-- question/passage pairs, and score flat around the "nothing matches" band (see
+-- task-7-fixes.md's measured retrieval table). A real prior-authorization submission
+-- carries a clinical narrative; this column gives the pipeline that text to search
+-- with instead.
+--
+-- Nullable: every row inserted before this migration has none, and the codes remain
+-- the authoritative identifiers of what was requested -- this column is retrieval
+-- input, not a second source of truth about the request itself. A case submitted
+-- without narrative text still adjudicates (services/pipeline.py falls back to the
+-- codes-only query), just with worse retrieval, which is what the nullability makes
+-- possible rather than a crash.
+ALTER TABLE cases ADD COLUMN request_text text;

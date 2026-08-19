@@ -10,7 +10,10 @@ import asyncpg
 
 from adjudication.models.case import Case
 
-_COLUMNS = "id, member_id, requested_code, icd10, date_of_service, kind, status, created_at"
+_COLUMNS = (
+    "id, member_id, requested_code, icd10, date_of_service, kind, status, created_at, "
+    "request_text"
+)
 
 
 def _row_to_case(row: asyncpg.Record) -> Case:
@@ -26,6 +29,7 @@ def _row_to_case(row: asyncpg.Record) -> Case:
         kind=row["kind"],
         status=row["status"],
         created_at=row["created_at"],
+        request_text=row["request_text"],
     )
 
 
@@ -37,14 +41,18 @@ async def insert(
     icd10: str,
     date_of_service,
     kind: str,
+    request_text: str | None = None,
 ) -> Case:
     """`status` is left to its column default (`queued`) -- Task 8's `POST /cases`
     enqueues a case before anything has run, and the pipeline itself is what advances
-    it via `update_status` below."""
+    it via `update_status` below. `request_text` defaults to `None`: most callers of
+    this function today (every test that doesn't care about retrieval quality) have no
+    narrative to give it, and the column is nullable for exactly that reason
+    (migrations/0002_cases_request_text.sql)."""
     row = await conn.fetchrow(
         f"""
-        INSERT INTO cases (member_id, requested_code, icd10, date_of_service, kind)
-        VALUES ($1, $2, $3, $4, $5)
+        INSERT INTO cases (member_id, requested_code, icd10, date_of_service, kind, request_text)
+        VALUES ($1, $2, $3, $4, $5, $6)
         RETURNING {_COLUMNS}
         """,
         member_id,
@@ -52,6 +60,7 @@ async def insert(
         icd10,
         date_of_service,
         kind,
+        request_text,
     )
     return _row_to_case(row)
 
@@ -61,12 +70,18 @@ async def get(conn, case_id: str) -> Case | None:
     return _row_to_case(row) if row is not None else None
 
 
-async def update_status(conn, case_id: str, status: str) -> Case:
+async def update_status(conn, case_id: str, status: str) -> Case | None:
     """`status` is one of the four the column's CHECK constraint allows -- the caller
-    (the pipeline) is the one place that decides which, this module only writes it."""
+    (the pipeline) is the one place that decides which, this module only writes it.
+
+    Returns `None` for an unknown `case_id`, mirroring `get` above (finding 10, fix
+    round 1): an UPDATE that matches no row hands `fetchrow` back `None`, and without
+    this guard `_row_to_case` would fail on it with a bare `TypeError:
+    'NoneType' object is not subscriptable` -- a caller's typo in a case id deserves a
+    clear "no such case", not a stack trace pointing at a dict lookup."""
     row = await conn.fetchrow(
         f"UPDATE cases SET status = $2 WHERE id = $1 RETURNING {_COLUMNS}",
         case_id,
         status,
     )
-    return _row_to_case(row)
+    return _row_to_case(row) if row is not None else None

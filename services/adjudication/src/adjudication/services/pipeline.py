@@ -1,4 +1,4 @@
-"""The seven-stage pipeline: `started -> eligibility -> policy -> criteria ->
+"""The six-stage pipeline: `started -> eligibility -> policy -> criteria ->
 criterion (one per criterion) -> decision`.
 
 Per the task-7 brief's own resolution of the design spec's stage list: the spec's
@@ -16,9 +16,39 @@ Events commit independently of the pipeline's own transactions (see
 `repositories.case_events`'s module docstring): a stage that ran must stay in the audit
 trail even if a later stage fails. The determination and its criterion results, by
 contrast, are the one thing this module writes inside a single transaction -- see
-`_persist` and `_short_circuit` below -- because a reviewer must never be able to see a
-determination with no criterion results behind it, or criterion results with no
+`_persist_decision` and `_short_circuit` below -- because a reviewer must never be able
+to see a determination with no criterion results behind it, or criterion results with no
 determination.
+
+**Exception: the `decision` event.** Every other event above describes a stage that has
+already finished by the time it is appended, so appending it before whatever comes next
+is safe -- that "next thing" cannot retroactively undo a stage that already ran.
+`decision` is not like that: it *describes the outcome of the transaction that persists
+it*, so appending it beforehand means describing a transaction that has not committed
+yet. If that transaction then failed, the append-only log would permanently say a case
+approved (or escalated) when no determination exists for it and the case is still
+`running` -- exactly the corruption Task 8's SSE console would render as fact. Fix round
+1 (finding 2) moved both `_short_circuit` and `_persist_decision` to append `decision`
+only *after* their transaction commits, the one deliberate exception to "append, then
+do the work" that the rest of this module follows.
+
+Fix round 1 (finding 6) also changed when `criterion` events are appended: every
+verification that actually completed gets its event before the pipeline checks whether
+any sibling verification failed upstream, not after. A criterion is not itself
+unverified just because `asyncio.gather` returned its result beside a failure -- see the
+concurrency note below.
+
+Fix round 1 (finding 1) wrapped the criteria-persistence step in a transaction that also
+deletes the case's previous criteria first -- see `repositories.criteria.insert_many`'s
+own docstring for why a second `adjudicate(case_id)` needs that to be well-defined rather
+than a `UniqueViolationError`.
+
+Fix round 1 (approved change) also gave the policy-search query a narrative-text input:
+`case.request_text or f"{case.requested_code} {case.icd10}"`. The codes-only query the
+brief originally specified retrieves poorly against the real corpus -- see
+task-7-fixes.md's measured retrieval table -- and the fallback keeps a case with no
+narrative adjudicating (just less well) rather than crashing on one that predates the
+column, or was submitted without one.
 
 **Short-circuits.** Four situations end the case before it ever reaches a verifier or
 `domain.criteria_sets.aggregate` (which is to say, before the gate). Each is recorded
@@ -58,10 +88,14 @@ criterion row belongs to exactly one set and sets are independent of each other.
 `return_exceptions=True` is what keeps one criterion's failure from leaving its sibling
 tasks running against a pool this function has already moved on from; an
 `UpstreamUnavailable` among the results short-circuits the case, and anything else
-(a bug, not an expected failure mode) is re-raised rather than swallowed.
+(a bug, not an expected failure mode) is re-raised rather than swallowed. Every
+verification that did complete is still appended as a `criterion` event first, before
+either check runs -- a criterion that finished is evidence gathered, whether or not a
+sibling's failure means the case will not use it to reach the gate (finding 6).
 """
 
 import asyncio
+import dataclasses
 
 import asyncpg
 from pramana_common.criteria import CriterionResult, GateReason, Outcome
@@ -92,7 +126,10 @@ POLICY_SEARCH_LIMIT = 8
 
 
 def _thresholds_payload(thresholds: GateThresholds) -> dict:
-    return {"min_confidence": thresholds.min_confidence}
+    # `dataclasses.asdict` rather than naming `min_confidence` by hand (finding 7):
+    # `GateThresholds` is total today, but a hand-picked field list silently drops
+    # anything a future field adds, and nothing here would fail loudly to say so.
+    return dataclasses.asdict(thresholds)
 
 
 async def _short_circuit(
@@ -101,19 +138,13 @@ async def _short_circuit(
     """Record `name` as both the sole entry of `determinations.blocking` and the
     `decision` event's `blocking` field -- the two places a reader needs it, since
     `determinations.reason`'s closed set has no room for a fifth value naming the
-    short-circuit itself (see this module's docstring table)."""
+    short-circuit itself (see this module's docstring table).
+
+    The `decision` event is appended only after the transaction below commits (finding
+    2, fix round 1): it describes that transaction's own outcome, so appending it first
+    would leave a `decision` event for a determination that, if the transaction then
+    failed, never actually got written."""
     blocking = [name]
-    await case_events_repo.append(
-        pool,
-        case_id,
-        "decision",
-        {
-            "outcome": Outcome.ESCALATE.value,
-            "reason": reason.value,
-            "winning_set": None,
-            "blocking": blocking,
-        },
-    )
     async with pool.acquire() as conn, conn.transaction():
         determination = await determinations_repo.insert(
             conn,
@@ -129,6 +160,17 @@ async def _short_circuit(
         # case with no determination -- or one stuck in `running` -- is invisible to
         # the reviewer queue, exactly the failure this system exists to prevent.
         await cases_repo.update_status(conn, case_id, "decided")
+    await case_events_repo.append(
+        pool,
+        case_id,
+        "decision",
+        {
+            "outcome": Outcome.ESCALATE.value,
+            "reason": reason.value,
+            "winning_set": None,
+            "blocking": blocking,
+        },
+    )
     return determination
 
 
@@ -145,19 +187,8 @@ async def _persist_decision(
     """The determination and its criterion results, in one transaction: a reviewer
     must never be able to load a determination with no results behind it, or results
     with no determination naming the case decided. The `case_events` `decision` row is
-    written first and separately, per this module's docstring on why events never
-    share a transaction with anything else."""
-    await case_events_repo.append(
-        pool,
-        case_id,
-        "decision",
-        {
-            "outcome": outcome.value,
-            "reason": reason.value if reason is not None else None,
-            "winning_set": winning_set,
-            "blocking": list(blocking),
-        },
-    )
+    appended only after that transaction commits (finding 2, fix round 1) -- see
+    `_short_circuit`'s docstring for why, which applies identically here."""
     async with pool.acquire() as conn, conn.transaction():
         await criterion_results_repo.insert_many(conn, verifications)
         determination = await determinations_repo.insert(
@@ -170,6 +201,17 @@ async def _persist_decision(
             winning_set=winning_set,
         )
         await cases_repo.update_status(conn, case_id, "decided")
+    await case_events_repo.append(
+        pool,
+        case_id,
+        "decision",
+        {
+            "outcome": outcome.value,
+            "reason": reason.value if reason is not None else None,
+            "winning_set": winning_set,
+            "blocking": list(blocking),
+        },
+    )
     return determination
 
 
@@ -215,10 +257,15 @@ async def adjudicate(
     )
 
     # --- policy: find the governing policy --------------------------------------
-    # Built from the case's own codes and nothing else -- no policy names, no disease
-    # terms, no per-code branching (task-7 brief, decision 5). Adding anything else
-    # here would be exactly the per-policy hardcoding CLAUDE.md invariant 3 forbids.
-    query = f"{case.requested_code} {case.icd10}"
+    # The case's own narrative if it has one, falling back to its codes -- never a
+    # policy name, a disease term, or any other per-code branching (task-7 brief,
+    # decision 5; CLAUDE.md invariant 3). The narrative comes from the caller, not from
+    # anything this module invents: a cross-encoder ranks a bare-code query no better
+    # than noise (codes are out of distribution for a model trained on question/passage
+    # pairs -- see task-7-fixes.md's measured retrieval table), so a case submitted
+    # with real clinical text retrieves the governing chunks and one submitted without
+    # any still adjudicates, just less well (approved change, fix round 1).
+    query = case.request_text or f"{case.requested_code} {case.icd10}"
     try:
         hits = await policy_client.search(query, case.date_of_service, POLICY_SEARCH_LIMIT)
     except UpstreamUnavailable:
@@ -250,7 +297,12 @@ async def adjudicate(
             pool, case_id, "upstream_unavailable", GateReason.INSUFFICIENT_EVIDENCE, thresholds
         )
 
-    criteria_sets = await criteria_repo.insert_many(pool, case_id, extracted_sets)
+    # One transaction for the delete-then-insert re-adjudication needs (finding 1, fix
+    # round 1): a mid-loop failure here must roll back to the previous run's rows, not
+    # leave a mix of old and half-written new ones -- see
+    # `repositories.criteria.insert_many`'s docstring for the full account.
+    async with pool.acquire() as conn, conn.transaction():
+        criteria_sets = await criteria_repo.insert_many(conn, case_id, extracted_sets)
 
     await case_events_repo.append(
         pool,
@@ -274,6 +326,28 @@ async def adjudicate(
         return_exceptions=True,
     )
 
+    # Every verification that actually completed gets its `criterion` event now, before
+    # either check below runs (finding 6, fix round 1): a criterion is not itself
+    # unverified just because a sibling task in the same gather() raised
+    # `UpstreamUnavailable` -- its evidence must not be lost from the audit trail just
+    # because the case goes on to short-circuit for an unrelated reason.
+    for criterion, result in zip(all_criteria, raw_results, strict=True):
+        if isinstance(result, BaseException):
+            continue
+        await case_events_repo.append(
+            pool,
+            case_id,
+            "criterion",
+            {
+                "criterion_id": str(criterion.id),
+                "set_ordinal": criterion.set_ordinal,
+                "ordinal": criterion.ordinal,
+                "verdict": result.result.verdict.value,
+                "confidence": result.result.confidence,
+                "tool": result.tool,
+            },
+        )
+
     upstream_failure = next(
         (r for r in raw_results if isinstance(r, UpstreamUnavailable)), None
     )
@@ -290,21 +364,6 @@ async def adjudicate(
         raise other_failure
 
     verifications: list[Verification] = raw_results
-
-    for criterion, verification in zip(all_criteria, verifications, strict=True):
-        await case_events_repo.append(
-            pool,
-            case_id,
-            "criterion",
-            {
-                "criterion_id": str(criterion.id),
-                "set_ordinal": criterion.set_ordinal,
-                "ordinal": criterion.ordinal,
-                "verdict": verification.result.verdict.value,
-                "confidence": verification.result.confidence,
-                "tool": verification.tool,
-            },
-        )
 
     # --- decision: aggregate across sets and gate ---------------------------------
     results_by_id: dict[str, CriterionResult] = {
