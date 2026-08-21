@@ -141,7 +141,18 @@ class RoutingStubLLM:
         self.calls += 1
         if "sets" in schema.get("properties", {}):
             return self.extraction_response
-        return self.judgment_response
+
+        # Judgment now arrives as one batched call per case rather than one per
+        # criterion (see verify.verify_all), so the canned verdict is fanned out to
+        # every criterion the prompt numbered. Counting them off the prompt keeps this
+        # stub honest about the batch's one hard rule: exactly one entry per criterion.
+        listed = messages[-1]["content"].split("Clinical notes:")[0]
+        indices = [
+            int(line.split(".", 1)[0])
+            for line in listed.splitlines()
+            if line[:1].isdigit()
+        ]
+        return {"verdicts": [dict(self.judgment_response, index=i) for i in indices]}
 
 
 # --- fixtures ------------------------------------------------------------------------
@@ -580,6 +591,8 @@ async def test_judgment_verdict_from_the_model_drives_the_outcome(db_pool):
 
     assert determination.outcome is Outcome.APPROVE
     assert determination.winning_set == 2
-    # More than one call: extraction, plus at least the two judgment criteria (set 2's
-    # symptoms, set 4's documented benefit) that reach `llm.chat` with notes present.
-    assert llm.calls > 1
+    # Exactly two: one extraction, one batched judgment round for the whole case. It was
+    # one call per judgment criterion until a real case spent seven of them re-reading
+    # the same chart -- see verify.verify_all. Pinning the number is what would catch a
+    # regression back to per-criterion calls, which no assertion on behaviour alone can.
+    assert llm.calls == 2

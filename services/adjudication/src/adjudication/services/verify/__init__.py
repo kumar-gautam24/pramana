@@ -23,6 +23,7 @@ that eligibility check is ever moved after verification, every "member has no X"
 in `deterministic.py`'s table starts silently producing denial-shaped answers
 (`NOT_MET`) about people the system has no record of."""
 
+import asyncio
 from dataclasses import dataclass
 from typing import Any
 
@@ -62,3 +63,54 @@ async def verify(
     if criterion.type in DETERMINISTIC_TYPES:
         return await deterministic.verify(criterion, case, member_client)
     return await judgment.verify(criterion, case, member_client, llm)
+
+
+async def verify_all(
+    criteria: list[Criterion], case: Case, member_client: MemberClient, llm: LLMProvider
+) -> list[Verification]:
+    """Verify every criterion of a case, returned in the order given.
+
+    Deterministic criteria stay one call each -- they are cheap SQL-shaped questions to
+    `member` and there is nothing to save by combining them. Judgment criteria are sent
+    to the model as a single batch, because each one otherwise re-sent the member's whole
+    chart: a real case with seven judgment criteria spent seven model calls reading the
+    same three sentences, which alone exceeded a rate-limited token budget and escalated
+    the case for a reason that had nothing to do with the member.
+
+    Each criterion is still judged and grounded independently -- see
+    `judgment.verify_many`. This is a change in round trips, not in isolation.
+
+    Exceptions propagate: the pipeline gathers these with `return_exceptions=True` and
+    decides what an `UpstreamUnavailable` means for the case as a whole.
+    """
+    from adjudication.services.verify import judgment
+
+    judgment_indices = [i for i, c in enumerate(criteria) if c.type not in DETERMINISTIC_TYPES]
+    judgment_criteria = [criteria[i] for i in judgment_indices]
+
+    deterministic_calls = [
+        verify(c, case, member_client, llm)
+        for c in criteria
+        if c.type in DETERMINISTIC_TYPES
+    ]
+    batched = judgment.verify_many(judgment_criteria, case, member_client, llm)
+
+    # One gather over both, so a slow model call and the member-service calls overlap
+    # rather than queueing behind each other.
+    settled = await asyncio.gather(*deterministic_calls, batched, return_exceptions=True)
+    *deterministic_results, judgment_results = settled
+
+    # A failure inside the batch is a failure for every criterion it carried: the
+    # exception is returned once by gather but the pipeline needs one entry per
+    # criterion, and handing back fewer would misalign every index after it.
+    if isinstance(judgment_results, BaseException):
+        judgment_results = [judgment_results] * len(judgment_criteria)
+
+    is_judgment = set(judgment_indices)
+    deterministic_iter = iter(deterministic_results)
+    judgment_iter = iter(judgment_results)
+    merged: list[object] = [
+        next(judgment_iter) if i in is_judgment else next(deterministic_iter)
+        for i in range(len(criteria))
+    ]
+    return merged  # type: ignore[return-value]

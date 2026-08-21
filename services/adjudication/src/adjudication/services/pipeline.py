@@ -82,11 +82,11 @@ short-circuited on `CoverageStatus.NO_RECORD` **before any verifier runs**. Movi
 eligibility after the policy search or after verification would let the pipeline
 produce denial-shaped `NOT_MET` answers about members it has never heard of.
 
-**Concurrency.** Every criterion across every set is verified in one
-`asyncio.gather(..., return_exceptions=True)` -- not one gather per set -- because each
-criterion row belongs to exactly one set and sets are independent of each other.
-`return_exceptions=True` is what keeps one criterion's failure from leaving its sibling
-tasks running against a pool this function has already moved on from; an
+**Concurrency.** Every criterion across every set is verified through one
+`verify_all` call -- one gather, not one per set, because each criterion row belongs to
+exactly one set and sets are independent. That function returns exceptions positionally
+rather than raising them, which is what keeps one criterion's failure from leaving its
+sibling tasks running against a pool this function has already moved on from; an
 `UpstreamUnavailable` among the results short-circuits the case, and anything else
 (a bug, not an expected failure mode) is re-raised rather than swallowed. Every
 verification that did complete is still appended as a `criterion` event first, before
@@ -94,7 +94,6 @@ either check runs -- a criterion that finished is evidence gathered, whether or 
 sibling's failure means the case will not use it to reach the gate (finding 6).
 """
 
-import asyncio
 import dataclasses
 
 import asyncpg
@@ -114,7 +113,7 @@ from adjudication.services.llm import LLMProvider
 from adjudication.services.member_client import CoverageStatus, MemberClient
 from adjudication.services.policy_client import PolicyClient
 from adjudication.services.upstream import UpstreamUnavailable
-from adjudication.services.verify import Verification, verify
+from adjudication.services.verify import Verification, verify_all
 
 #: Retrieval width for the policy search that opens the `policy` stage. Twice what
 #: NCD 240.4's worked example needs (chunks 56-59, four chunks -- see
@@ -315,16 +314,15 @@ async def adjudicate(
     )
 
     # --- criterion: verify every criterion across every set, concurrently -------
-    # One gather over the flattened list, not one per set: sets are independent, and
-    # a criterion belongs to exactly one of them, so there is nothing set boundaries
-    # would add to how these run (task-7 brief, decision 6).
+    # One flattened list, not one batch per set: sets are independent, and a criterion
+    # belongs to exactly one of them, so set boundaries add nothing to how these run
+    # (task-7 brief, decision 6). `verify_all` owns the concurrency and returns results
+    # positionally, including exceptions -- see its docstring for why the judgment
+    # criteria go to the model together while the deterministic ones do not.
     all_criteria = [
         criterion for criteria_set in criteria_sets for criterion in criteria_set.criteria
     ]
-    raw_results = await asyncio.gather(
-        *(verify(criterion, case, member_client, llm) for criterion in all_criteria),
-        return_exceptions=True,
-    )
+    raw_results = await verify_all(all_criteria, case, member_client, llm)
 
     # Every verification that actually completed gets its `criterion` event now, before
     # either check below runs (finding 6, fix round 1): a criterion is not itself
