@@ -24,8 +24,13 @@ TEST_DATABASE_DSN = os.environ.get(
 #: their own stream/group/channel (a fresh uuid4 each time) rather than the production
 #: constants in services/queue.py, since there is no per-test rollback for Redis the
 #: way db_session gives Postgres.
+#: 6379 and `dev-redis-password` are docker-compose.yml's own defaults for
+#: REDIS_PORT/REDIS_PASSWORD (see .env.example), so `docker compose up` followed by
+#: `pytest` works on a fresh clone with nothing exported. This default said 6380 for as
+#: long as it existed, which happened to be the port one developer's stale container had
+#: bound -- the suite was unrunnable anywhere else until TEST_REDIS_URL was set by hand.
 TEST_REDIS_URL = os.environ.get(
-    "TEST_REDIS_URL", "redis://:dev-redis-password@localhost:6380"
+    "TEST_REDIS_URL", "redis://:dev-redis-password@localhost:6379"
 )
 
 

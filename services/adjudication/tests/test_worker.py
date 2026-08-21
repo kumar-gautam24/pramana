@@ -18,13 +18,14 @@ from datetime import date
 from uuid import uuid4
 
 import pytest
+from conftest import TEST_REDIS_URL
 from fixtures.ncd_240_4_extraction import HITS, RAW_RESPONSE
 from pramana_common.gate import GateThresholds
 
 from adjudication.repositories import cases as cases_repo
 from adjudication.services import queue
 from adjudication.services.member_client import Adherence, CoverageStatus
-from adjudication.worker import CONSUMER, run
+from adjudication.worker import BLOCK_MS, CONSUMER, SOCKET_TIMEOUT_S, run
 
 MEMBER_ID = "m-1"
 DATE_OF_SERVICE = date(2026, 1, 15)
@@ -302,3 +303,55 @@ async def test_run_processes_either_case_kind(db_pool, redis_client, kind):
 
     stored = await cases_repo.get(db_pool, case.id)
     assert stored.status == "decided"
+
+
+# --- the blocking-read deadline -----------------------------------------------------
+#
+# These exist because the worker died five seconds after start against a live Redis
+# while all 287 tests were green. redis-py 8's DEFAULT_SOCKET_TIMEOUT is 5s, exactly
+# BLOCK_MS, so a blocking read over an idle stream raced its own socket deadline and
+# raised instead of returning empty. Every test above passes TEST_BLOCK_MS (100ms), which
+# is why none of them could see it: the bug lives only at the production constant.
+
+
+def test_the_socket_deadline_stays_above_the_block_window():
+    """The invariant, checked directly so it cannot drift. Raising BLOCK_MS to meet or
+    exceed the socket deadline reintroduces the exact failure."""
+    assert SOCKET_TIMEOUT_S > BLOCK_MS / 1_000
+
+
+async def test_an_idle_stream_at_the_production_block_value_returns_rather_than_raising(
+    db_pool, redis_client
+):
+    """The regression test proper: the production BLOCK_MS, an empty stream, and a client
+    carrying the production socket deadline. Costs one BLOCK_MS of wall clock, which is
+    the price of exercising the constant that actually ships rather than a stand-in.
+
+    `redis_client` here must be built the way `worker.main()` builds it -- a fixture
+    client on redis-py's default deadline would reproduce the bug rather than the fix."""
+    from redis.asyncio import Redis
+
+    stream, group = _names()
+
+    # Built exactly the way worker.main() builds it -- from_url with the shipped
+    # deadline. The `redis_client` fixture is deliberately not reused here: it carries
+    # redis-py's default deadline, which is the bug rather than the fix.
+    production_client = Redis.from_url(
+        TEST_REDIS_URL, decode_responses=True, socket_timeout=SOCKET_TIMEOUT_S
+    )
+
+    try:
+        await run(
+            production_client,
+            db_pool,
+            StubPolicyClient(),
+            StubMemberClient(),
+            StubLLM(RAW_RESPONSE),
+            GateThresholds(),
+            stream=stream,
+            group=group,
+            iterations=1,
+            block_ms=BLOCK_MS,
+        )
+    finally:
+        await production_client.aclose()

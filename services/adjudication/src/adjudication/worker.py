@@ -55,6 +55,22 @@ CONSUMER = "worker"
 #: production.
 BLOCK_MS = 5_000
 
+#: The socket read deadline for the worker's Redis client, which MUST stay above the
+#: block window above.
+#:
+#: redis-py 8 ships `DEFAULT_SOCKET_TIMEOUT = 5` seconds where earlier versions had no
+#: deadline at all, and that default is exactly `BLOCK_MS`. A blocking XREADGROUP over
+#: an idle stream therefore waits the full five seconds and loses a race against its own
+#: socket deadline, raising `TimeoutError` instead of returning empty -- so the worker
+#: died five seconds after start on any quiet queue, which is every deployment between
+#: cases. Found by running the worker against a live Redis; the suite could not see it,
+#: because every test passed a short block value and only production used the constant.
+#:
+#: The margin is what makes the deadline mean "Redis has stopped answering" rather than
+#: "nothing arrived". Catching the timeout instead would have worked mechanically and
+#: made a genuine Redis outage indistinguishable from an idle queue.
+SOCKET_TIMEOUT_S = BLOCK_MS / 1_000 + 5.0
+
 
 async def _process_one(
     pool: asyncpg.Pool,
@@ -143,7 +159,11 @@ async def main() -> None:
     await db.probe_fresh()
     pool = await db.pool()
 
-    redis_client = Redis.from_url(settings.redis_url, decode_responses=True)
+    # Unlike main.py's client, this one performs blocking reads -- see
+    # SOCKET_TIMEOUT_S for why the default deadline is not survivable here.
+    redis_client = Redis.from_url(
+        settings.redis_url, decode_responses=True, socket_timeout=SOCKET_TIMEOUT_S
+    )
     await startup.probe_redis(redis_client)
 
     # The only process that calls `adjudicate`, hence the only process whose

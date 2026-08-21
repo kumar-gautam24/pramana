@@ -20,6 +20,7 @@ and that it can pass -- is proven below without ever calling a live model."""
 
 import httpx
 import pytest
+from conftest import TEST_REDIS_URL
 from fastapi.testclient import TestClient
 
 from adjudication import db, startup
@@ -34,7 +35,10 @@ UNREACHABLE_HTTP_URL = "http://127.0.0.1:1"
 #: The real services this dev environment's docker compose already runs (see
 #: docker-compose.yml): Redis on its host-mapped port with the compose default
 #: password, policy and member on their own host-mapped ports.
-REACHABLE_REDIS_URL = "redis://:dev-redis-password@localhost:6380"
+# Same source as the rest of the suite rather than a second literal: two copies of a
+# connection string drift, and this one already had -- it pinned a port only one
+# stale container ever bound.
+REACHABLE_REDIS_URL = TEST_REDIS_URL
 REACHABLE_POLICY_URL = "http://localhost:8001"
 REACHABLE_MEMBER_URL = "http://localhost:8005"
 
