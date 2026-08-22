@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     seconds_between_cases: float = 20.0
     #: How long to wait for one case to reach a determination before recording it as
     #: unfinished and moving on. It has to exceed adjudication's own retry ladder
-    #: (`worker.RETRY_DELAYS_S`, 85 seconds of waiting) plus the pipeline's work, or a case
+    #: (`worker.RETRY_BUDGET_S`, 85 seconds of waiting -- a bound on the ladder's total and
+    #: not on each rung, so a provider's own `Retry-After` cannot push a case past it)
+    #: plus the pipeline's work, or a case
     #: the worker is legitimately retrying past a rate limit gets recorded here as a gap in
     #: the measurement -- and the retry, which exists to stop exactly that, would produce
     #: nothing measurable. If either number moves, they move together.

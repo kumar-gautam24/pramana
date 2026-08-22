@@ -100,23 +100,34 @@ SOCKET_TIMEOUT_S = BLOCK_MS / 1_000 + 5.0
 #: rest -- and if either number moves, they have to move together.
 RETRY_DELAYS_S: tuple[float, ...] = (5.0, 20.0, 60.0)
 
-#: A cap on the server's own `Retry-After`. A rate limiter that asks for an hour is asking
-#: for longer than this case can wait -- the ladder is bounded by the eval harness's case
-#: timeout above -- so the ask is honoured up to here and no further. That rung will very
-#: likely fail again; the ladder then ends and the case escalates, which is the honest
-#: outcome for an upstream that has told us it will not serve us in time.
-MAX_RETRY_DELAY_S = 90.0
+#: The total a case may spend waiting, across every rung of the ladder.
+#:
+#: It is the ladder's own nominal total rather than a new number, because that total is what
+#: the paragraph above already promises `evals` -- and a per-rung cap alone does not keep the
+#: promise. A provider sending `Retry-After: 90` on each of three rungs would wait 270
+#: seconds, which is past `case_timeout_seconds` (240s): the harness would record the case as
+#: unfinished, so the retries that exist to stop exactly that would produce nothing
+#: measurable, and the ladder would have broken the bound it documents. Honouring the
+#: server's advice is worth doing only inside the budget the ladder already claims.
+RETRY_BUDGET_S = sum(RETRY_DELAYS_S)
 
 
-def _retry_delay(rung: int, exc: UpstreamUnavailable) -> float:
-    """How long to wait before attempt `rung + 2`, given what the upstream said.
+def _retry_delay(rung: int, exc: UpstreamUnavailable, waited: float) -> float:
+    """How long to wait before attempt `rung + 2`, given what the upstream said and how much
+    of `RETRY_BUDGET_S` the earlier rungs have already spent.
 
     The server's own `Retry-After` wins when it asks for longer than the ladder's rung: a
     rate limiter knows how much of its window is left and this process does not. It cannot
-    push the wait past `MAX_RETRY_DELAY_S`, and it cannot shorten a rung either -- a provider
-    that says "0" while still refusing is a busy-wait, and the ladder's own spacing is what
-    keeps the retries from being three more 429s in a row."""
-    return min(max(RETRY_DELAYS_S[rung], exc.retry_after or 0.0), MAX_RETRY_DELAY_S)
+    push the case past the budget, and it cannot shorten a rung either -- a provider that says
+    "0" while still refusing is a busy-wait, and the ladder's own spacing is what keeps the
+    retries from being three more 429s in a row.
+
+    Only called while budget remains -- `_process_one` ends the ladder instead when it does
+    not, rather than firing the remaining rungs back to back at zero delay. A provider that
+    asked for longer than the whole budget has said it will not serve this case in time, and
+    two immediate re-asks spend a clinician's wait and the case's tokens to be told so twice."""
+    asked = max(RETRY_DELAYS_S[rung], exc.retry_after or 0.0)
+    return min(asked, RETRY_BUDGET_S - waited)
 
 
 async def _process_one(
@@ -139,6 +150,9 @@ async def _process_one(
     at-least-once stream guarantees one anyway), and a partial-resume path would be a
     second, less-tested way for a case to reach the gate."""
     attempts = len(RETRY_DELAYS_S) + 1
+    #: Spent so far on this case, so `RETRY_BUDGET_S` bounds the ladder's total and not
+    #: merely each rung of it.
+    waited = 0.0
 
     for attempt in range(1, attempts + 1):
         try:
@@ -157,7 +171,10 @@ async def _process_one(
             # as a determination rather than as `failed`, because "we could not obtain the
             # evidence" is true either way and a case with no determination at all tells a
             # reviewer strictly less.
-            exhausted = attempt == attempts
+            # Out of rungs, or out of budget: a provider whose `Retry-After` has already
+            # consumed `RETRY_BUDGET_S` gets no further attempt, because the rungs left would
+            # have to fire immediately and it has just told us it will refuse them.
+            exhausted = attempt == attempts or waited >= RETRY_BUDGET_S
             if exhausted or not exc.transient:
                 logger.exception(
                     "case %s: upstream %s unavailable after %s attempt(s) (transient=%s); "
@@ -177,7 +194,8 @@ async def _process_one(
                 )
                 return
 
-            delay = _retry_delay(attempt - 1, exc)
+            delay = _retry_delay(attempt - 1, exc, waited)
+            waited += delay
             # Written to the audit trail before the wait, not after it: a case sitting
             # `running` for a minute must be explicable while it is happening, and this row
             # is the only thing that distinguishes "waiting out a rate limit" from "the
