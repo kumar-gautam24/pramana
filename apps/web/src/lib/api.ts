@@ -3,16 +3,27 @@
  *
  * Kept separate from `gateway.ts` so that module stays about transport and this one
  * stays about the API surface: the list below is the honest answer to "what can the
- * console do", and it is deliberately short. There is no case-submission call -- intake
- * is not a reviewer's job, and the route exists for the eval harness and a payer's own
- * systems.
+ * console do", and it is deliberately short.
+ *
+ * It grew a case-submission call and the eval routes on 2026-08-22. Plan 07 said intake was
+ * not a reviewer's job and left it out; the design's own request-path diagram has
+ * `web ──/api/cases──► gateway` and `web ──/eval-runs──► gateway`, so leaving them out made
+ * the console a strict subset of the thing that was designed. Both are role-gated at the
+ * gateway and mirrored in `lib/session.ts`, so the console offers only what a given account
+ * can actually use.
  */
 
 import { readEventStream, request } from "@/lib/gateway";
 import type {
   CaseCriteria,
   CaseEvent,
+  CaseSubmission,
   Case,
+  EvalRun,
+  EvalRunReport,
+  EvalRunStart,
+  GoldenCase,
+  GoldenCaseSubmission,
   QueuedCase,
   Review,
   ReviewSubmission,
@@ -61,6 +72,22 @@ export function listCases(
   return request<QueuedCase[]>(`/api/cases${suffix}`, { token, signal });
 }
 
+/**
+ * Submit a prior-authorization request. Answers 202 with the case id before the worker has
+ * touched it, so the caller's next move is to watch the case rather than to read a result.
+ *
+ * `idempotency_key` is not optional here even though the route allows it to be. The one
+ * client this function has is a form with a button a person can press twice, and the second
+ * press would otherwise buy a second adjudication of the same request -- another few model
+ * calls, and a duplicate on someone's queue.
+ */
+export function createCase(
+  token: string,
+  submission: CaseSubmission,
+): Promise<{ case_id: string }> {
+  return request("/api/cases", { method: "POST", token, body: submission });
+}
+
 export function getCase(token: string, caseId: string, signal?: AbortSignal): Promise<Case> {
   return request<Case>(`/api/cases/${caseId}`, { token, signal });
 }
@@ -103,6 +130,59 @@ export function listCaseReviews(
   signal?: AbortSignal,
 ): Promise<Review[]> {
   return request<Review[]>(`/api/cases/${caseId}/reviews`, { token, signal });
+}
+
+/* --- evals -------------------------------------------------------------------------
+ *
+ * Operator-only at the gateway (`SATISFIES["operator"]` -- operator and admin). The console
+ * mirrors that in `lib/session.ts::mayRunEvals` and hides the screen rather than offering a
+ * control it knows would be refused; the gateway is still the enforcement point.
+ */
+
+export function listGoldenCases(token: string, signal?: AbortSignal): Promise<GoldenCase[]> {
+  return request<GoldenCase[]>("/api/golden-cases", { token, signal });
+}
+
+/**
+ * Author a golden case. The label is the person's, not the model's -- `author` is required
+ * by the service and rejected if empty, because a label a model wrote measures agreement
+ * between two models rather than correctness (ADR-0008).
+ */
+export function createGoldenCase(
+  token: string,
+  submission: GoldenCaseSubmission,
+): Promise<GoldenCase> {
+  return request<GoldenCase>("/api/golden-cases", {
+    method: "POST",
+    token,
+    body: submission,
+  });
+}
+
+export function listEvalRuns(token: string, signal?: AbortSignal): Promise<EvalRun[]> {
+  return request<EvalRun[]>("/api/eval-runs", { token, signal });
+}
+
+/**
+ * Start a run. Answers 202 with the id before any case has been submitted -- a full run is
+ * tens of minutes of paced model calls, so the result is read back from `getEvalRun`.
+ *
+ * Rate-limited to two an hour at the gateway, deliberately: a run costs real model tokens.
+ * A 429 arrives here as a `GatewayError` carrying the gateway's own sentence.
+ */
+export function startEvalRun(
+  token: string,
+  start: EvalRunStart,
+): Promise<{ run_id: number; status: string }> {
+  return request("/api/eval-runs", { method: "POST", token, body: start });
+}
+
+export function getEvalRun(
+  token: string,
+  runId: number,
+  signal?: AbortSignal,
+): Promise<EvalRunReport> {
+  return request<EvalRunReport>(`/api/eval-runs/${runId}`, { token, signal });
 }
 
 /**

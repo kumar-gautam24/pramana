@@ -134,6 +134,12 @@ h3 {
   font-size: 0.85rem;
 }
 
+.shell__nav {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.9rem;
+}
+
 .shell__spacer {
   flex: 1;
 }
@@ -481,6 +487,26 @@ button.secondary {
 
 .field {
   margin-bottom: 0.85rem;
+}
+
+/* Two columns where the fields are short and paired (a code and a diagnosis, a date and a
+   request kind), one where the viewport cannot hold two. */
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0 1rem;
+}
+
+.fields--wide {
+  grid-column: 1 / -1;
+}
+
+/* Guidance under a field, distinct from a validation error and from body text. Used where a
+   field's value changes what the system can do rather than merely being required. */
+.hint {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin: 0.3rem 0 0;
 }
 
 .error {

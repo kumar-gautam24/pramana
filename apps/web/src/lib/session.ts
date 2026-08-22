@@ -69,3 +69,16 @@ export function clearSession(): void {
 export function mayReview(role: Session["user"]["role"]): boolean {
   return role === "clinician" || role === "admin";
 }
+
+/**
+ * Whether a role may reach the eval harness, mirroring the gateway's `SATISFIES["operator"]`
+ * for every `/api/golden-cases` and `/api/eval-runs` route: operator and admin.
+ *
+ * Not a clinician, and that is the same kind of distinction as `mayReview` rather than a
+ * seniority ordering. Starting a run spends model tokens and publishes a figure about the
+ * system's own accuracy; recording a determination on a member's case is a licensed clinical
+ * act. Neither role should be able to do the other's job by accident.
+ */
+export function mayRunEvals(role: Session["user"]["role"]): boolean {
+  return role === "operator" || role === "admin";
+}

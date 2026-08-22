@@ -16,6 +16,26 @@ import { useEffect } from "react";
 
 import { DisclosureBanner } from "@/components/AiDisclosure";
 import { useSession } from "@/components/SessionProvider";
+import { mayRunEvals } from "@/lib/session";
+
+/**
+ * Every screen this account can actually reach.
+ *
+ * Role-gated the same way the review form is: the gateway is the enforcement point, and this
+ * list exists only so the console does not offer a link whose destination would 403. Intake
+ * is open to any session -- submitting a request is the ordinary use of the system -- and the
+ * eval harness is not.
+ */
+function navigation(role: string) {
+  const links = [
+    { href: "/cases", label: "Queue" },
+    { href: "/cases/new", label: "Submit a case" },
+  ];
+  if (mayRunEvals(role as Parameters<typeof mayRunEvals>[0])) {
+    links.push({ href: "/evals", label: "Evals" });
+  }
+  return links;
+}
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const { status, session, signOut } = useSession();
@@ -35,8 +55,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="shell">
       <header className="shell__header">
         <Link href="/cases" className="shell__brand">
-          Pramana<span>reviewer console</span>
+          Pramana<span>console</span>
         </Link>
+        <nav className="shell__nav">
+          {navigation(session.user.role).map((link) => (
+            <Link key={link.href} href={link.href}>
+              {link.label}
+            </Link>
+          ))}
+        </nav>
         <div className="shell__spacer" />
         <span className="shell__identity">
           {session.user.email} &middot; {session.user.role}
