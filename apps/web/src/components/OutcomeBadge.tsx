@@ -27,7 +27,15 @@ export function OutcomeBadge({ outcome }: { outcome: string | null }) {
     return <span className="badge badge--neutral">No determination yet</span>;
   }
 
-  const known = RENDERABLE[outcome as keyof typeof RENDERABLE];
+  // `Object.hasOwn`, not a bare lookup. `RENDERABLE` is an object literal, so
+  // `RENDERABLE["constructor"]` resolves to `Object.prototype.constructor` -- truthy -- and
+  // a `!known` test never fired for it. The component then read `label` and `className` off
+  // a function, both `undefined`, and rendered `<span></span>`: an empty badge, which a
+  // reviewer reads as "no outcome" when the truth is "an outcome nothing here understands".
+  // Own-property membership is what this lookup always meant; it just did not say so.
+  const known = Object.hasOwn(RENDERABLE, outcome)
+    ? RENDERABLE[outcome as keyof typeof RENDERABLE]
+    : undefined;
   if (!known) {
     return (
       <span className="badge badge--negative" title="This console renders only the two outcomes the system can produce.">

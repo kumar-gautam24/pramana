@@ -150,12 +150,30 @@ export async function readEventStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  //: A trailing CR held back from the previous read. `\r` may be a line terminator on its
+  //: own or the first half of a `\r\n` whose `\n` has not arrived yet, and normalising it
+  //: eagerly would turn one split terminator into two blank lines -- inventing a frame
+  //: boundary in the middle of a payload.
+  let carry = "";
 
   try {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
+
+      // The SSE grammar terminates a line with CRLF, LF **or** a bare CR, so line endings
+      // are normalised before any framing happens. Splitting on `"\n\n"` alone -- which is
+      // what this did until 2026-08-22 -- never finds the boundary in a `\r\n\r\n` stream:
+      // every frame stays in the buffer, no event is ever delivered, and the case screen
+      // silently stops updating with no error to notice. Correct against the server this
+      // project ships, which writes `\n\n`; wrong behind any proxy that rewrites endings.
+      let text = carry + decoder.decode(value, { stream: true });
+      carry = "";
+      if (text.endsWith("\r")) {
+        carry = "\r";
+        text = text.slice(0, -1);
+      }
+      buffer += text.replace(/\r\n|\r/g, "\n");
 
       // A frame is complete only once its terminating blank line has arrived; anything
       // after the last one is a partial frame and stays in the buffer for the next read.
