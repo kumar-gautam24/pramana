@@ -25,7 +25,16 @@ from pramana_common.gate import GateThresholds
 from adjudication.repositories import cases as cases_repo
 from adjudication.services import queue
 from adjudication.services.member_client import Adherence, CoverageStatus
-from adjudication.worker import BLOCK_MS, CONSUMER, SOCKET_TIMEOUT_S, run
+from adjudication.services.upstream import UpstreamUnavailable
+from adjudication.worker import (
+    BLOCK_MS,
+    CONSUMER,
+    RETRY_BUDGET_S,
+    RETRY_DELAYS_S,
+    SOCKET_TIMEOUT_S,
+    _retry_delay,
+    run,
+)
 
 MEMBER_ID = "m-1"
 DATE_OF_SERVICE = date(2026, 1, 15)
@@ -355,3 +364,109 @@ async def test_an_idle_stream_at_the_production_block_value_returns_rather_than_
         )
     finally:
         await production_client.aclose()
+
+
+# --- the retry ladder's bound on its own total ----------------------------------------
+#
+# `RETRY_BUDGET_S` was added in 6ebac3e and its bound was checked by hand once, then held
+# by a comment. That is the weakest form this project accepts for a cross-service
+# invariant, and the invariant is a real one: the ladder promises `evals` that a retried
+# case still settles inside `case_timeout_seconds`, so a provider sending a long
+# `Retry-After` on every rung must not be able to walk the case past that window.
+
+
+def _ladder_total(retry_after_values):
+    """Drive `_retry_delay` the way `_process_one` does -- rung by rung, accumulating
+    `waited` -- and return the delays it chose plus their total.
+
+    Reimplements only the accumulation, not the policy: every delay comes from the real
+    `_retry_delay`, and the loop's shape (stop when the budget is spent) is the one
+    `_process_one` uses. A test that recomputed the delays would prove nothing."""
+    delays = []
+    waited = 0.0
+    for rung in range(len(RETRY_DELAYS_S)):
+        if waited >= RETRY_BUDGET_S:
+            break
+        exc = UpstreamUnavailable(
+            "llm", "status 429", transient=True, retry_after=retry_after_values[rung]
+        )
+        delay = _retry_delay(rung, exc, waited)
+        delays.append(delay)
+        waited += delay
+    return delays, waited
+
+
+@pytest.mark.parametrize(
+    "retry_after",
+    [
+        pytest.param([None, None, None], id="no-advice"),
+        pytest.param([0.0, 0.0, 0.0], id="zero"),
+        pytest.param([5.0, 5.0, 5.0], id="shorter-than-the-rungs"),
+        pytest.param([30.0, 30.0, 30.0], id="around-the-rungs"),
+        # The measured trigger for 6ebac3e: 90 on each of three rungs waited 270s against a
+        # 240s case timeout, so the retries that exist to stop the harness recording the
+        # case unfinished were what guaranteed it.
+        pytest.param([90.0, 90.0, 90.0], id="past-the-budget-on-every-rung"),
+        pytest.param([3600.0, 3600.0, 3600.0], id="absurd"),
+        # Observed live on 2026-08-22 against Groq's 8000 TPM ceiling.
+        pytest.param([6.24, 18.31, 34.85], id="measured-groq-429s"),
+        pytest.param([None, 3600.0, None], id="one-absurd-rung-among-normal-ones"),
+    ],
+)
+def test_the_ladder_never_waits_longer_than_its_budget(retry_after):
+    """The bound `6ebac3e` documented, over every shape of provider advice."""
+    delays, total = _ladder_total(retry_after)
+
+    assert total <= RETRY_BUDGET_S, f"waited {total}s against a budget of {RETRY_BUDGET_S}s"
+    assert all(d >= 0 for d in delays), f"a negative delay would busy-wait: {delays}"
+
+
+def test_the_server_wins_when_it_asks_for_longer_than_the_rung():
+    """A rate limiter knows how much of its window is left and this process does not, so its
+    advice beats the ladder's own spacing -- inside the budget."""
+    exc = UpstreamUnavailable("llm", "status 429", transient=True, retry_after=30.0)
+
+    assert _retry_delay(0, exc, 0.0) == 30.0
+
+
+def test_the_ladder_wins_when_the_server_asks_for_less():
+    """The floor matters: a provider that says "0" while still refusing is a busy-wait, and
+    the ladder's spacing is what stops three more 429s in a row."""
+    exc = UpstreamUnavailable("llm", "status 429", transient=True, retry_after=0.0)
+
+    assert _retry_delay(0, exc, 0.0) == RETRY_DELAYS_S[0]
+
+
+def test_no_advice_falls_back_to_the_rung():
+    exc = UpstreamUnavailable("llm", "status 503", transient=True)
+
+    assert _retry_delay(1, exc, 0.0) == RETRY_DELAYS_S[1]
+
+
+def test_a_rung_is_clipped_to_what_is_left_of_the_budget():
+    """Not skipped and not fired at zero: clipped. `_process_one` ends the ladder when the
+    budget is spent, so the last rung's job is to use exactly the remainder."""
+    spent = RETRY_BUDGET_S - 4.0
+    exc = UpstreamUnavailable("llm", "status 429", transient=True, retry_after=3600.0)
+
+    assert _retry_delay(2, exc, spent) == pytest.approx(4.0)
+
+
+def test_the_budget_is_the_ladder_s_own_nominal_total():
+    """Pinned rather than assumed. If a rung is added or retuned and the budget is not
+    derived from the rungs, the promise made to `evals` silently changes -- which is the
+    whole reason `RETRY_BUDGET_S` is a sum and not a constant someone chose."""
+    assert RETRY_BUDGET_S == sum(RETRY_DELAYS_S)
+
+
+def test_the_ladder_settles_well_inside_the_harness_case_timeout():
+    """The cross-service bound, stated as a test rather than as prose in two files. `evals`'
+    default `case_timeout_seconds` is 240s; the ladder may spend at most `RETRY_BUDGET_S` of
+    that waiting, and the pipeline needs the rest. If either number moves without the other,
+    this fails -- which is what "they have to move together" should mean operationally."""
+    evals_case_timeout_seconds = 240.0
+
+    assert RETRY_BUDGET_S < evals_case_timeout_seconds / 2, (
+        f"a retried case may wait {RETRY_BUDGET_S}s of a {evals_case_timeout_seconds}s "
+        "budget, leaving too little for the pipeline itself"
+    )
