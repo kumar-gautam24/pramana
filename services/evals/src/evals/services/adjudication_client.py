@@ -23,6 +23,18 @@ class CaseState:
     events: list[dict[str, Any]]
 
 
+#: This service reaches `adjudication` directly rather than through the gateway, so it
+#: states its own principal the way the gateway would have. Truthful rather than convenient:
+#: `POST /api/eval-runs` is gated on `operator` at the front door, so every case submitted by
+#: a run is an operator's act, and adjudication requires that role before it will accept the
+#: `model_arithmetic` run mode.
+#:
+#: This is not a hole in the gateway's header stripping. `adjudication` is not reachable from
+#: outside the private network at all -- the gateway exposes no route to it that this header
+#: could be smuggled through, because it strips every inbound `x-pramana-` header first.
+_PRINCIPAL_HEADERS = {"X-Pramana-Role": "operator"}
+
+
 class AdjudicationClient:
     def __init__(self, client: httpx.AsyncClient, base_url: str) -> None:
         self._client = client
@@ -31,7 +43,10 @@ class AdjudicationClient:
     async def submit(self, fixture: dict[str, Any]) -> str:
         try:
             response = await self._client.post(
-                f"{self._base_url}/cases", json=fixture, timeout=30.0
+                f"{self._base_url}/cases",
+                json=fixture,
+                headers=_PRINCIPAL_HEADERS,
+                timeout=30.0,
             )
         except httpx.HTTPError as exc:
             raise AdjudicationUnavailable(f"submit failed: {exc}") from exc

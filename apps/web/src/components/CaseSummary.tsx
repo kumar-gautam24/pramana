@@ -16,6 +16,12 @@ import type { Case, Determination } from "@/lib/types";
  * `upstream_unavailable` deserves the reviewer's attention for a different reason from
  * the others: it is a fact about our infrastructure, not about the member's record, and
  * nothing a clinician does can resolve it.
+ *
+ * A case whose `run_mode` is not `deterministic` gets a banner above everything else. Such a
+ * case exists to measure what happens when the model does the arithmetic (ADR-0021), and its
+ * determination is an experimental result rather than an adjudication -- the check is
+ * `!== "deterministic"` rather than `=== "model_arithmetic"` so a mode this console has never
+ * heard of is also flagged, which is the safe direction to be wrong in.
  */
 export function CaseSummary({
   caseData,
@@ -30,6 +36,15 @@ export function CaseSummary({
 
   return (
     <section className="card stack stack--tight">
+      {caseData.run_mode !== "deterministic" ? (
+        <p className="experiment">
+          <strong>Experimental run mode: {caseData.run_mode}.</strong> The threshold, date and
+          category comparisons on this case were performed by a language model instead of by
+          code. This case exists to measure the error rate of doing that. Its determination is
+          a measurement, not an adjudication, and must not be relied on for a member.
+        </p>
+      ) : null}
+
       <div className="row">
         <h1>
           <span className="mono">{caseData.requested_code}</span> for member{" "}

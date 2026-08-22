@@ -2,6 +2,25 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from enum import StrEnum
+
+
+class RunMode(StrEnum):
+    """Which arithmetic decided this case (ADR-0021).
+
+    `DETERMINISTIC` is the system as designed: threshold, enum and temporal comparisons are
+    performed in Python against facts fetched from `member` (ADR-0003, invariant 2).
+    `MODEL_ARITHMETIC` is the ablation that argues for that design empirically -- the same
+    pipeline, the same fetches, the same evidence, with the comparisons handed to the model
+    so the error rate of doing it the wrong way can be published rather than asserted.
+
+    A closed enum and a CHECK constraint (migrations/0005_cases_run_mode.sql) rather than a
+    bool, because this is the column that says whether a determination came from the system
+    or from the experiment that exists to argue against it, and "true"/"false" would not say
+    which experiment."""
+
+    DETERMINISTIC = "deterministic"
+    MODEL_ARITHMETIC = "model_arithmetic"
 
 
 @dataclass(frozen=True)
@@ -31,3 +50,9 @@ class Case:
     #: task-8 brief decision 1). None for every case with no idempotency concern of its
     #: own -- the column's UNIQUE constraint permits any number of NULLs.
     idempotency_key: str | None = None
+    #: Which arithmetic verifies this case's deterministic criteria -- see `RunMode`. Read
+    #: by `services/verify` and recorded on the `started` event, so the audit trail says
+    #: which arm decided the case rather than leaving it to be inferred from the tools.
+    #: Defaulted so every existing construction of a `Case` keeps working, and defaulted to
+    #: the *shipped* behaviour rather than to the experiment.
+    run_mode: RunMode = RunMode.DETERMINISTIC

@@ -496,6 +496,22 @@ button.secondary {
   font-size: 0.875rem;
 }
 
+/*
+ * A case adjudicated in the model_arithmetic run mode. Red, unlike an escalation: this is
+ * not the system referring a decision to a person, it is a determination produced by the
+ * arrangement the project exists to argue against, and a reviewer must not read it as the
+ * former. The heaviest treatment on the page, deliberately.
+ */
+.experiment {
+  color: var(--negative);
+  background: var(--negative-bg);
+  border: 1px solid var(--negative);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.85rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
 /* --- login ----------------------------------------------------------------------- */
 
 .login {

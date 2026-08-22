@@ -40,16 +40,41 @@ def _to_wire(case: GoldenCase) -> dict:
     }
 
 
+#: Keys a fixture must carry, checked at authoring time rather than left for the run to
+#: discover: a golden case that cannot be submitted is a broken label, and finding that out
+#: mid-run means the run reports a gap where there was really a typo.
+_REQUIRED_FIXTURE_KEYS = {"member_id", "requested_code", "icd10", "date_of_service", "kind"}
+
+#: Keys a fixture must **not** carry, each because it belongs to the run rather than to the
+#: label, and a fixture holding one would make a run's own record of itself untrue.
+#:
+#: `run_mode` is the run's ablation (`runner._RUN_MODE_FOR_ABLATION`). A fixture pinning it
+#: would let a run whose `ablation` column says `model_arithmetic` adjudicate a case the
+#: ordinary way, publishing a figure that measures the opposite of its label.
+#:
+#: `idempotency_key` is worse, because it looks harmless. Adjudication's `POST /cases` is
+#: idempotent on that key: a second run submitting the same fixture would be handed the
+#: *first* run's case, complete with the first run's determination and run mode. A run and
+#: its ablated twin would then score the identical case twice and read as agreeing perfectly.
+_FORBIDDEN_FIXTURE_KEYS = {"run_mode", "idempotency_key"}
+
+
 @router.post("/golden-cases", status_code=201)
 async def create(body: GoldenCaseIn, request: Request) -> dict:
-    required = {"member_id", "requested_code", "icd10", "date_of_service", "kind"}
-    missing = sorted(required - set(body.fixture))
+    missing = sorted(_REQUIRED_FIXTURE_KEYS - set(body.fixture))
     if missing:
-        # Checked here rather than left for the run to discover: a golden case that
-        # cannot be submitted is a broken label, and finding that out mid-run means the
-        # run reports a gap where there was really a typo.
         raise HTTPException(
             status_code=422, detail=f"fixture is missing required keys: {missing}"
+        )
+
+    forbidden = sorted(_FORBIDDEN_FIXTURE_KEYS & set(body.fixture))
+    if forbidden:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"fixture must not set {forbidden}: those belong to the run that submits "
+                "this case, not to the label"
+            ),
         )
 
     async with request.app.state.pool.acquire() as conn:

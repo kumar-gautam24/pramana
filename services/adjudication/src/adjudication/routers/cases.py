@@ -9,7 +9,7 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from adjudication.models.case import Case
+from adjudication.models.case import Case, RunMode
 from adjudication.repositories import cases as cases_repo
 from adjudication.repositories import criteria as criteria_repo
 from adjudication.repositories import reviews as reviews_repo
@@ -34,6 +34,25 @@ class CaseCreate(BaseModel):
     #: creates a new case, which is correct for a caller with no retry concern of its
     #: own.
     idempotency_key: str | None = None
+    #: Which arithmetic verifies this case's deterministic criteria (ADR-0021). Defaulted
+    #: to the shipped behaviour: the ablation is an experiment an operator runs, never
+    #: something a submission falls into. See `_ABLATION_ROLES` below for who may ask for
+    #: it, and `models/case.py::RunMode` for what it changes.
+    run_mode: RunMode = RunMode.DETERMINISTIC
+
+
+#: Who may submit a case in the ablated run mode, mirroring the gateway's own
+#: `SATISFIES["operator"]`. Checked here as well as there because the gateway gates on the
+#: *route*, and this is a field: `POST /api/cases` is open to any session, as it must be --
+#: submitting a prior-authorization request is the ordinary use of this system.
+#:
+#: The ablation is labelled everywhere it touches (the `cases.run_mode` column, every
+#: criterion's `tool`, the `started` event, a banner in the console), so this check is
+#: defence in depth rather than the thing that keeps an ablated determination from being
+#: mistaken for a real one. It is worth having anyway: a determination reached by asking a
+#: model to compare two numbers must be something an operator chose, not something a
+#: clinician's submission could wander into.
+_ABLATION_ROLES = frozenset({"operator", "admin"})
 
 
 def _case_to_wire(case: Case) -> dict:
@@ -47,12 +66,33 @@ def _case_to_wire(case: Case) -> dict:
         "status": case.status,
         "created_at": case.created_at.isoformat(),
         "request_text": case.request_text,
+        # On every case, not only ablated ones. A reader who has to infer "this was decided
+        # the normal way" from the *absence* of a field cannot tell it from an older client
+        # that never sent one.
+        "run_mode": case.run_mode.value,
     }
 
 
 @router.post("/cases", status_code=202)
 async def create_case(payload: CaseCreate, request: Request) -> dict:
     state = request.app.state
+
+    if payload.run_mode is RunMode.MODEL_ARITHMETIC:
+        # The role comes from the header the gateway writes after resolving the session,
+        # never from the body -- the gateway strips every inbound `x-pramana-` header, so a
+        # browser client cannot assert one. A caller that states no role at all is refused
+        # rather than trusted: `evals` reaches this service directly and says `operator`
+        # explicitly for that reason (see its `AdjudicationClient`).
+        role = request.headers.get("x-pramana-role", "")
+        if role not in _ABLATION_ROLES:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "the model_arithmetic run mode is an operator's experiment; this "
+                    "caller may submit cases only in the deterministic run mode"
+                ),
+            )
+
     case, _created = await submit_case(
         state.pool,
         state.redis,
@@ -63,6 +103,7 @@ async def create_case(payload: CaseCreate, request: Request) -> dict:
         kind=payload.kind,
         request_text=payload.request_text,
         idempotency_key=payload.idempotency_key,
+        run_mode=payload.run_mode,
     )
     return {"case_id": case.id}
 

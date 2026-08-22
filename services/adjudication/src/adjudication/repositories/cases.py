@@ -10,11 +10,11 @@ import json
 
 import asyncpg
 
-from adjudication.models.case import Case
+from adjudication.models.case import Case, RunMode
 
 _COLUMNS = (
     "id, member_id, requested_code, icd10, date_of_service, kind, status, created_at, "
-    "request_text, idempotency_key"
+    "request_text, idempotency_key, run_mode"
 )
 
 
@@ -33,6 +33,11 @@ def _row_to_case(row: asyncpg.Record) -> Case:
         created_at=row["created_at"],
         request_text=row["request_text"],
         idempotency_key=row["idempotency_key"],
+        # The CHECK constraint is what guarantees this converts; a value outside the enum
+        # would have to have got past the database first, and raising here is the right
+        # answer to that -- see `RunMode` for why this column in particular must not be
+        # guessed at.
+        run_mode=RunMode(row["run_mode"]),
     )
 
 
@@ -46,6 +51,7 @@ async def insert(
     kind: str,
     request_text: str | None = None,
     idempotency_key: str | None = None,
+    run_mode: RunMode = RunMode.DETERMINISTIC,
 ) -> Case:
     """`status` is left to its column default (`queued`) -- Task 8's `POST /cases`
     enqueues a case before anything has run, and the pipeline itself is what advances
@@ -63,9 +69,9 @@ async def insert(
         f"""
         INSERT INTO cases (
             member_id, requested_code, icd10, date_of_service, kind, request_text,
-            idempotency_key
+            idempotency_key, run_mode
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING {_COLUMNS}
         """,
         member_id,
@@ -75,6 +81,7 @@ async def insert(
         kind,
         request_text,
         idempotency_key,
+        run_mode.value,
     )
     return _row_to_case(row)
 

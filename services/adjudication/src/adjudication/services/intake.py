@@ -10,7 +10,7 @@ decision 1) instead of a 500."""
 
 import asyncpg
 
-from adjudication.models.case import Case
+from adjudication.models.case import Case, RunMode
 from adjudication.repositories import cases as cases_repo
 from adjudication.services import queue
 
@@ -33,13 +33,19 @@ async def submit_case(
     kind: str,
     request_text: str | None = None,
     idempotency_key: str | None = None,
+    run_mode: RunMode = RunMode.DETERMINISTIC,
 ) -> tuple[Case, bool]:
     """Insert `case`, enqueue it for the worker, and return `(case, created)`.
 
     `created` is `False` exactly when `idempotency_key` was not `None` and already
     named an existing case -- the enqueue is skipped on that path (decision 1's whole
     point: a retried submission must not run through the pipeline a second time), and
-    the case returned is the one the *first* submission created, not a new row."""
+    the case returned is the one the *first* submission created, not a new row.
+
+    Note that the returned case's `run_mode` is the *first* submission's, which is one
+    reason an eval fixture must not carry an `idempotency_key`: two runs of the same golden
+    case would otherwise share one adjudication case, and the ablated twin would silently be
+    handed the deterministic one. `evals` rejects such a fixture at authoring time."""
     try:
         case = await cases_repo.insert(
             pool,
@@ -50,6 +56,7 @@ async def submit_case(
             kind=kind,
             request_text=request_text,
             idempotency_key=idempotency_key,
+            run_mode=run_mode,
         )
     except asyncpg.UniqueViolationError as exc:
         if exc.constraint_name != _IDEMPOTENCY_CONSTRAINT or idempotency_key is None:

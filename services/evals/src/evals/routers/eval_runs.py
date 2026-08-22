@@ -58,22 +58,14 @@ def _costs() -> CostModel:
 
 @router.post("/eval-runs", status_code=202)
 async def start(body: RunIn, request: Request, background: BackgroundTasks) -> dict:
-    settings = get_settings()
+    """Start a run in the background and return its id.
 
-    if body.ablation is Ablation.MODEL_ARITHMETIC:
-        # The ablation needs adjudication running in a mode where the model performs the
-        # comparisons instead of deterministic code. That mode does not exist in
-        # adjudication yet, and a run that silently ignored the flag would publish a
-        # figure labelled "model arithmetic" produced by SQL -- the exact opposite of
-        # what ADR-0003 wants proven. Refuse until there is something real to measure.
-        raise HTTPException(
-            status_code=501,
-            detail=(
-                "the model_arithmetic ablation needs an adjudication run mode that does "
-                "not exist yet; refusing rather than reporting a figure this run did not "
-                "measure"
-            ),
-        )
+    `ablation` answered 501 until 2026-08-22, because the mode it names did not exist in
+    `adjudication` and a run that quietly ignored the flag would have published a figure
+    labelled "model arithmetic" that SQL produced -- the exact opposite of what ADR-0003
+    wants proven. It exists now (ADR-0021): `runner` submits each case with the matching
+    `run_mode`, so the column and the cases it describes cannot disagree."""
+    settings = get_settings()
 
     thresholds = {"min_confidence": GateThresholds(body.min_confidence).min_confidence}
 
@@ -96,6 +88,7 @@ async def start(body: RunIn, request: Request, background: BackgroundTasks) -> d
                 seconds_between_cases=settings.seconds_between_cases,
                 case_timeout_seconds=settings.case_timeout_seconds,
                 limit=body.limit,
+                ablation=run.ablation,
             )
         except Exception:
             logger.exception("eval run %s failed", run.id)

@@ -18,6 +18,7 @@ from pramana_common.criteria import Outcome
 
 from evals.domain import scoring
 from evals.models.golden_case import GoldenCase
+from evals.models.run import Ablation
 from evals.repositories import golden_cases as golden_repo
 from evals.repositories import runs as runs_repo
 from evals.services.adjudication_client import AdjudicationClient, AdjudicationUnavailable
@@ -26,6 +27,29 @@ logger = logging.getLogger(__name__)
 
 #: Terminal states of an adjudication case.
 _SETTLED = frozenset({"decided", "failed"})
+
+#: `eval_runs.ablation` -> `cases.run_mode`. The two vocabularies differ by one word --
+#: a run has "no ablation", a case is decided "deterministically" -- and this is the only
+#: place they meet. Written as a table rather than an `if` so an `Ablation` member added
+#: without a run mode is a `KeyError` at the moment the run starts, not a run that silently
+#: adjudicates every case the ordinary way while its column claims otherwise (ADR-0021).
+_RUN_MODE_FOR_ABLATION = {
+    Ablation.NONE: "deterministic",
+    Ablation.MODEL_ARITHMETIC: "model_arithmetic",
+}
+
+#: A criterion verified by the ablated arm carries this prefix on its `tool`
+#: (`adjudication.services.verify.arithmetic.MODEL_TOOL_PREFIX`). Counting them is how a
+#: report says how much of a run was *actually* ablated: `condition_codes` has no comparison
+#: step to move to the model -- `member` filters by code in SQL, so the fetch is the
+#: membership test -- and a partial ablation reported as a whole one would overstate the
+#: experiment.
+_MODEL_TOOL_PREFIX = "model_arithmetic:"
+
+#: The tool a judgment criterion records. Excluded from the ablation denominator: judgment
+#: criteria are model-decided in both arms, so counting them would make every run look
+#: partly ablated.
+_JUDGMENT_TOOL = "judgment"
 
 
 def _decision_from(events: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -59,15 +83,36 @@ async def _await_settled(
         await asyncio.sleep(3.0)
 
 
+def _ablation_coverage(criteria: list[dict[str, Any]]) -> dict[str, int]:
+    """How many of this case's comparison-bearing criteria the ablated arm actually decided.
+
+    Reported rather than assumed, because the ablation is genuinely partial and saying so is
+    cheaper than a reader discovering it. In a run with `ablation = none` the second number
+    is zero, which is the honest reading of that run too."""
+    tools = [str(c.get("tool", "")) for c in criteria]
+    comparisons = [tool for tool in tools if tool != _JUDGMENT_TOOL]
+    return {
+        "comparison_criteria": len(comparisons),
+        "by_model_arithmetic": sum(
+            1 for tool in comparisons if tool.startswith(_MODEL_TOOL_PREFIX)
+        ),
+    }
+
+
 async def _run_one(
     pool,
     client: AdjudicationClient,
     run_id: int,
     case: GoldenCase,
     timeout_seconds: float,
+    run_mode: str,
 ) -> None:
     try:
-        case_id = await client.submit(case.fixture)
+        # The run's own mode is added to the fixture here rather than stored on the golden
+        # case: a golden case is a labelled input and must be submittable under either arm,
+        # or the two arms would not be running the same set. `golden_cases` rejects a fixture
+        # that carries `run_mode` itself for the same reason.
+        case_id = await client.submit({**case.fixture, "run_mode": run_mode})
         status = await _await_settled(client, case_id, timeout_seconds)
         events = await client.events(case_id)
     except AdjudicationUnavailable as exc:
@@ -122,6 +167,7 @@ async def _run_one(
                 "recall": criterion_score.recall,
                 "f1": criterion_score.f1,
                 "weakest_confidence": _weakest_confidence(criteria),
+                **_ablation_coverage(criteria),
             },
             error=error,
         )
@@ -134,6 +180,7 @@ async def resume_run(
     run_id: int,
     seconds_between_cases: float,
     case_timeout_seconds: float,
+    ablation: Ablation,
     limit: int | None = None,
 ) -> int:
     """Score every golden case that this run has not already scored.
@@ -147,7 +194,13 @@ async def resume_run(
 
     `limit` caps how many cases run, for proving the harness without waiting for the
     whole set. Returns how many cases this call actually scored.
+
+    `ablation` is required rather than defaulted. It decides the `run_mode` every case is
+    submitted under, and a default would let a run whose column says `model_arithmetic`
+    quietly adjudicate every case the ordinary way -- a published figure measuring the
+    opposite of what it is labelled.
     """
+    run_mode = _RUN_MODE_FOR_ABLATION[ablation]
     async with pool.acquire() as conn:
         cases = await golden_repo.list_all(conn)
         already = {
@@ -165,9 +218,14 @@ async def resume_run(
             # Paced, not concurrent -- see the module docstring.
             await asyncio.sleep(seconds_between_cases)
         logger.info(
-            "run %s: golden case %s (%s of %s)", run_id, case.id, index + 1, len(pending)
+            "run %s: golden case %s (%s of %s), run_mode=%s",
+            run_id,
+            case.id,
+            index + 1,
+            len(pending),
+            run_mode,
         )
-        await _run_one(pool, client, run_id, case, case_timeout_seconds)
+        await _run_one(pool, client, run_id, case, case_timeout_seconds, run_mode)
 
     async with pool.acquire() as conn:
         # 'complete' even when individual cases failed: the run itself finished, and the
@@ -220,6 +278,29 @@ async def report(pool, run_id: int, costs: scoring.CostModel) -> dict[str, Any] 
             "thresholds": run.thresholds,
             "started_at": run.started_at.isoformat(),
             "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+        },
+        # The rates every money figure below is a multiple of, published with the figures
+        # rather than left in this service's configuration. A cost is a count times a rate;
+        # a reader who cannot see the rate cannot check the arithmetic, cannot tell a
+        # measurement from an assumption, and cannot disagree with the assumption -- which
+        # `config.py`'s own docstring says is the point of these being configuration.
+        "costs": {
+            "average_claim_amount": costs.average_claim_amount,
+            "review_minutes": costs.review_minutes,
+            "clinician_hourly_rate": costs.clinician_hourly_rate,
+            "review_cost": costs.review_cost,
+        },
+        # How much of this run was really ablated. `condition_codes` criteria have no
+        # comparison step to move to the model, so even a `model_arithmetic` run reports
+        # fewer ablated criteria than it has comparisons -- stated, not left to be
+        # discovered (ADR-0021).
+        "ablation_coverage": {
+            "comparison_criteria": sum(
+                int(r.criterion_scores.get("comparison_criteria", 0) or 0) for r in results
+            ),
+            "by_model_arithmetic": sum(
+                int(r.criterion_scores.get("by_model_arithmetic", 0) or 0) for r in results
+            ),
         },
         "cases_scored": len(outcomes),
         "case_level": {

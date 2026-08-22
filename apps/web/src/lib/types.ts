@@ -61,6 +61,13 @@ export interface Determination {
   decided_at: string;
 }
 
+/**
+ * Which arithmetic decided a case (`cases.run_mode`, ADR-0021). `deterministic` is the
+ * system as designed; `model_arithmetic` is the ablation, in which the model performed the
+ * threshold and date comparisons SQL otherwise does.
+ */
+export type RunMode = "deterministic" | "model_arithmetic";
+
 export interface Case {
   id: string;
   member_id: string;
@@ -71,6 +78,13 @@ export interface Case {
   status: CaseStatus;
   created_at: string;
   request_text: string | null;
+  /**
+   * Typed `string`, like the other two vocabularies read back off the wire: a value this
+   * console does not recognise must be shown, not coerced. `CaseSummary` treats anything
+   * other than `deterministic` as an experimental determination, which is the safe
+   * direction to be wrong in -- an unknown mode is certainly not the shipped one.
+   */
+  run_mode: string;
 }
 
 /** A row of `GET /api/cases` -- a case plus its determination, if it has one yet. */

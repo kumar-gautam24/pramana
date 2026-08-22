@@ -95,6 +95,13 @@ short-circuited on `CoverageStatus.NO_RECORD` **before any verifier runs**. Movi
 eligibility after the policy search or after verification would let the pipeline
 produce denial-shaped `NOT_MET` answers about members it has never heard of.
 
+**The `model_arithmetic` run mode changes nothing in this module** beyond the `started`
+event's payload (ADR-0021). `services/verify` reads `case.run_mode` and swaps who performs
+the threshold, enum and temporal comparisons; the fetches, the evidence, the gate, the
+thresholds, the events and the persistence are the same code on both arms. That is what
+makes a run and its ablated twin a comparison rather than an anecdote, and it is why
+nothing here branches on the mode.
+
 **Concurrency.** Every criterion across every set is verified through one
 `verify_all` call -- one gather, not one per set, because each criterion row belongs to
 exactly one set and sets are independent. That function returns exceptions positionally
@@ -295,7 +302,13 @@ async def adjudicate(
         raise LookupError(f"no case {case_id!r} to adjudicate")
 
     await cases_repo.update_status(pool, case_id, "running")
-    await case_events_repo.append(pool, case_id, "started", {})
+    # `run_mode` is on the very first event, not inferred from the tools further down: the
+    # audit trail has to say which arithmetic decided a case in the one place a reader looks
+    # first, and a retried attempt (ADR-0020) appends its own `started` so the answer is
+    # per attempt rather than per case (ADR-0021).
+    await case_events_repo.append(
+        pool, case_id, "started", {"run_mode": case.run_mode.value}
+    )
 
     # --- eligibility ------------------------------------------------------------
     try:
