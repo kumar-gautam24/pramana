@@ -62,6 +62,133 @@ services:
       db:
         condition: service_healthy
 
+  adjudication:
+    build:
+      context: .
+      dockerfile: services/adjudication/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pramana:pramana@db:5432/pramana_adjudication
+      REDIS_URL: redis://:${REDIS_PASSWORD:-dev-redis-password}@redis:6379
+      POLICY_URL: http://policy:8001
+      MEMBER_URL: http://member:8005
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_URL: ${LLM_URL:-http://host.docker.internal:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:14b-instruct}
+      # Each is empty unless its own provider is selected, and a provider selected
+      # without its key is rejected at startup -- see adjudication/config.py.
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    ports: ["${ADJUDICATION_PORT:-8002}:8002"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Consumes the Redis stream POST /cases enqueues onto and runs each case through the
+  # pipeline -- see services/adjudication/src/adjudication/worker.py's module
+  # docstring. Its own container, not a background task inside `adjudication`'s
+  # lifespan, so the HTTP process and the worker restart and redeploy independently.
+  # Same image, same environment as `adjudication`: it is the same service's other
+  # process, not a second configuration to keep in sync by hand.
+  adjudication-worker:
+    build:
+      context: .
+      dockerfile: services/adjudication/Dockerfile
+    command: ["python", "-m", "adjudication.worker"]
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pramana:pramana@db:5432/pramana_adjudication
+      REDIS_URL: redis://:${REDIS_PASSWORD:-dev-redis-password}@redis:6379
+      POLICY_URL: http://policy:8001
+      MEMBER_URL: http://member:8005
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_URL: ${LLM_URL:-http://host.docker.internal:11434}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:14b-instruct}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  auth:
+    build:
+      context: .
+      dockerfile: services/auth/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pramana:pramana@db:5432/pramana_auth
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+    ports: ["${AUTH_PORT:-8004}:8004"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  evals:
+    build:
+      context: .
+      dockerfile: services/evals/Dockerfile
+    environment:
+      DATABASE_URL: postgresql+asyncpg://pramana:pramana@db:5432/pramana_evals
+      ADJUDICATION_URL: http://adjudication:8002
+      # The money constants the threshold sweep turns into a recommendation. Set them to
+      # your own figures -- the operating point this service reports is a function of
+      # them, so leaving the defaults means reporting against the defaults' assumptions.
+      AVERAGE_CLAIM_AMOUNT: ${AVERAGE_CLAIM_AMOUNT:-1500}
+      REVIEW_MINUTES: ${REVIEW_MINUTES:-12}
+      CLINICIAN_HOURLY_RATE: ${CLINICIAN_HOURLY_RATE:-180}
+      # Recorded on every run so a result can be reproduced. Passed in rather than read
+      # from git at runtime: the container has no repository, and a value defaulting to
+      # "unknown" is how an irreproducible run gets recorded as a reproducible one.
+      GIT_SHA: ${GIT_SHA:-unknown}
+      PROMPT_VERSION: ${PROMPT_VERSION:-unknown}
+      MODEL_NAME: ${LLM_MODEL:-unknown}
+    ports: ["${EVALS_PORT:-8003}:8003"]
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # The single front door. Every upstream address is configuration -- nothing in the
+  # gateway hardcodes a host -- and it refuses to start unless all four answer, so a
+  # misconfigured address fails here rather than on a caller's first request.
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    environment:
+      POLICY_URL: http://policy:8001
+      ADJUDICATION_URL: http://adjudication:8002
+      EVALS_URL: http://evals:8003
+      AUTH_URL: http://auth:8004
+      REDIS_URL: redis://:${REDIS_PASSWORD:-dev-redis-password}@redis:6379
+      # One hop behind a load balancer in a deployment; zero in compose, where falling
+      # back to the peer address is correct. Never guess this high: trusting more hops
+      # than exist lets a caller spoof its own address, and rate limits are per-address.
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
+      ENV: ${ENV:-development}
+    ports: ["${GATEWAY_PORT:-8000}:8000"]
+    depends_on:
+      redis:
+        condition: service_healthy
+      auth:
+        condition: service_started
+      policy:
+        condition: service_started
+      adjudication:
+        condition: service_started
+      evals:
+        condition: service_started
+
+  # The reviewer console. Holds GATEWAY_URL and no other backend address -- an
+  # architectural invariant, not a preference: the browser must have exactly one way in.
+  web:
+    build:
+      context: ./apps/web
+    environment:
+      NEXT_PUBLIC_GATEWAY_URL: ${PUBLIC_GATEWAY_URL:-http://localhost:8000}
+    ports: ["${WEB_PORT:-3000}:3000"]
+    depends_on:
+      gateway:
+        condition: service_started
+
 volumes:
   pgdata:
   redisdata:

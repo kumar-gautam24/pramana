@@ -246,7 +246,12 @@ async def seed_population(
         )
         usage_nights += await cpap_usage_repo.insert_many(conn, patient.id, nights)
 
-        initial_note = generate_note(patient.id, seed, STUDY_DATE, member_plan.symptoms)
+        # documents_order on the study-date note only: the visit that referred the
+        # patient for the study is the one whose chart would record having done so, and
+        # NCD 240.4 asks that question about the study, not about the follow-up.
+        initial_note = generate_note(
+            patient.id, seed, STUDY_DATE, member_plan.symptoms, documents_order=True
+        )
         await notes_repo.insert(conn, member_id=patient.id, date=STUDY_DATE, text=initial_note)
 
         # Every member gets a follow-up note, including those with no benefits to

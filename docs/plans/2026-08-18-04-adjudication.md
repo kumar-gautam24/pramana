@@ -76,9 +76,12 @@ case_events        id, case_id, seq, type, payload jsonb, created_at
 - `criteria.set_ordinal` is what makes ADR-0011 representable: criteria belonging to the same alternative set share it.
 - `determinations.winning_set` is NULL on escalation and names the satisfied set on approval — the audit answer to "which path approved this".
 - `case_events` gets `UNIQUE (case_id, seq)` so a gap or a duplicate is a constraint violation rather than a silent reordering, and a `BEFORE UPDATE OR DELETE` trigger that raises. Append-only must be enforced by the database, not by convention: a commissioner's audit rests on it.
-- Every FK `ON DELETE CASCADE`; verify the cascade **by executing it**.
+- Every FK `ON DELETE CASCADE` **except `case_events.case_id`, which is `ON DELETE RESTRICT`.** The two requirements above cannot both hold for that one table: a cascading delete of a case reaches `case_events`, where the append-only trigger raises, so the delete fails either way. What differs is the error a reader gets. Making it explicit says the true thing — a case whose audit trail exists cannot be deleted, which is the point of keeping one. The trigger stays as the second line of defence, and covers `TRUNCATE` too: `TRUNCATE` bypasses row triggers entirely, so it needs its own `BEFORE TRUNCATE ... FOR EACH STATEMENT` trigger. An audit log a `TRUNCATE` empties is not an audit log.
+- `cases.status` tracks pipeline progress only — `queued`, `running`, `decided`, `failed`. The outcome lives on the determination and is never mirrored here; two copies of a decision drift, and only one of them is the one a regulator reads.
+- No foreign key crosses a service boundary: `criteria.source_chunk_id` and `source_display_id` belong to `policy`, `cases.member_id` to `member`, `reviews.clinician_id` to `auth`. They are recorded as values, unreferenced.
+- A case may be adjudicated more than once, so `determinations` carries no unique constraint on `case_id` — a superseded determination must survive. The current one is the newest by `created_at`, then `id`.
 
-- [ ] Tests asserting: the append-only trigger rejects an UPDATE and a DELETE; `(case_id, seq)` is unique; `winning_set` is nullable; cascade empties all children.
+- [ ] Tests asserting: the append-only trigger rejects an UPDATE, a DELETE and a TRUNCATE; `(case_id, seq)` is unique; `winning_set` is nullable; deleting a case cascades its four other child tables empty; deleting a case that has events is refused.
 - [ ] Apply via `scripts/migrate.py`; `pg_dump --schema-only` the result and paste it.
 - [ ] Commit.
 
@@ -196,6 +199,35 @@ Using the **real** ingested policy corpus and the seeded members, with a stubbed
 ### Task 10: Record the state
 
 Update `.workspace/STATE.md`, `JOURNAL.md`, `ERRORS.md` with real counts and anything that failed first time. `.workspace/` is gitignored — do not commit it.
+
+---
+
+## Deferred out of this plan, with an owner
+
+- **No model is available on the development machine.** Ollama is not installed and
+  nothing answers on 11434, so two things in this plan cannot be done as written. Task 5's
+  fixture is **hand-authored, not recorded** — it must say so in the file itself, because a
+  fixture labelled "recorded" that nobody recorded is worse than no fixture. And ADR-0010's
+  startup guard ("services refuse to start if the configured model cannot produce
+  schema-constrained output") is **not implemented in Task 5**: it would make the service
+  unbootable here, and nothing before Task 8 calls a model. **Task 8 owns the guard.**
+  Task 9's end-to-end run needs a real model and is blocked until one is installed.
+
+- ~~**`reviews.outcome` is deliberately unconstrained.**~~ **Closed 2026-08-22 by plan 07 task
+  5**, migration `0004` and [ADR-0019](../decisions/0019-reviewer-outcome-vocabulary.md). The
+  vocabulary is `approve` / `deny` / `pend`. Of the four candidates named here, `modify`
+  (partial approval) was **excluded**: a case carries one code, one date and no units, so a
+  partial has nothing to be partial of — and a partial is legally adverse as to the portion
+  refused, so as a fourth flat value it would make "was an adverse determination issued"
+  unanswerable from this column. The ADR records what would have to change for it to be added.
+
+- **A transient upstream failure is retried in the worker**, added 2026-08-22 —
+  [ADR-0020](../decisions/0020-retry-transient-upstream-failures-in-the-worker.md). This
+  amends task 4's "no retries in the client layer" rather than contradicting it: the argument
+  there was that a retry hidden in a client triples a case's latency with nothing in the audit
+  trail to say why, and its converse names the worker as the layer that *can* write each
+  attempt into `case_events`. Task 7's short-circuit table now applies to permanent failures
+  only; `UpstreamUnavailable` carries `transient`, and the pipeline re-raises those.
 
 ---
 

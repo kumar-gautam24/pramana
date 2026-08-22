@@ -1,0 +1,44 @@
+[project]
+name = "adjudication"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "pramana-common",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "asyncpg>=0.29",
+    "httpx>=0.27",
+    "pydantic-settings>=2.4",
+    "redis>=5.0",
+]
+
+[tool.uv.sources]
+pramana-common = { path = "../../packages/common", editable = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/adjudication"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.24", "ruff>=0.6", "httpx>=0.27"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# The db_session fixture holds a session-scoped pool (see tests/conftest.py) so its
+# pooled connections stay valid across tests. Function-scoped loops (the default) tear
+# down and recreate the loop per test, and asyncpg connections bound to a torn-down loop
+# fail on the next checkout with "another operation is in progress" -- so fixtures and
+# tests alike must share one loop for the session.
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
