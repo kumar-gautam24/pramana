@@ -20,11 +20,21 @@ restarted process resume its predecessor's own pending list instead of starting 
 empty one and leaving the crashed attempt's message stuck forever.
 
 **A case whose `adjudicate` raises ends `failed`, not `running`** (decision 6).
-`adjudicate` already converts every *expected* failure -- no eligibility record, no
-governing policy, an upstream timeout -- into an ordinary escalation; anything that
-still escapes it is a genuine bug, and `_process_one` below is the only layer left that
-can catch it and record that the case needs a human to look at why, rather than sitting
-in `running` forever with nothing in `case_events` explaining what happened."""
+`adjudicate` already converts every *expected permanent* failure -- no eligibility
+record, no governing policy, a schema mismatch -- into an ordinary escalation; anything
+that still escapes it is either a transient upstream failure (below) or a genuine bug,
+and `_process_one` below is the only layer left that can catch the latter and record
+that the case needs a human to look at why, rather than sitting in `running` forever
+with nothing in `case_events` explaining what happened.
+
+**Transient upstream failures are retried here, and nowhere else** (ADR-0020). A 429
+from the model provider is a fact about our own rate limit; adjudicating on it would
+put a case on a clinician's queue for a reason no clinician can act on, which is what
+happened on the first live end-to-end run -- four of five cases escalated with
+`upstream_unavailable` and none of the four had anything to do with the member's
+record. The retry does not belong in `policy_client` or `llm`: their docstrings record
+why, and the reason is exactly that this layer can write each attempt into
+`case_events` where a reviewer and an auditor can see it, and a client cannot."""
 
 import asyncio
 import logging
@@ -41,8 +51,9 @@ from adjudication.repositories import cases as cases_repo
 from adjudication.services import queue
 from adjudication.services.llm import LLMProvider, build_provider
 from adjudication.services.member_client import MemberClient
-from adjudication.services.pipeline import adjudicate
+from adjudication.services.pipeline import adjudicate, record_upstream_exhausted
 from adjudication.services.policy_client import PolicyClient
+from adjudication.services.upstream import UpstreamUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +82,42 @@ BLOCK_MS = 5_000
 #: made a genuine Redis outage indistinguishable from an idle queue.
 SOCKET_TIMEOUT_S = BLOCK_MS / 1_000 + 5.0
 
+#: How long to wait before each retry of a case whose upstream failed transiently. The
+#: length of this tuple is how many retries a case gets; one more attempt than that is the
+#: total (ADR-0020).
+#:
+#: The rungs are sized against the failure that was actually measured, not chosen for
+#: roundness. The trigger was a 429 from a provider metering 8000 tokens per minute while one
+#: extraction costs about 2800 -- a bucket that refills over a minute. So the ladder has to
+#: contain at least one wait longer than that window, or every attempt lands inside the same
+#: exhausted minute and the retry buys nothing. The two short rungs cover the other transient
+#: shapes, which clear in seconds: a restarting container, a reset connection, a momentary
+#: 503.
+#:
+#: The ceiling on the total is `evals`' `case_timeout_seconds` (240s by default). A retried
+#: case must still settle inside that window, or the harness records it as unfinished and the
+#: retries produce nothing measurable. 85 seconds of waiting leaves the pipeline itself the
+#: rest -- and if either number moves, they have to move together.
+RETRY_DELAYS_S: tuple[float, ...] = (5.0, 20.0, 60.0)
+
+#: A cap on the server's own `Retry-After`. A rate limiter that asks for an hour is asking
+#: for longer than this case can wait -- the ladder is bounded by the eval harness's case
+#: timeout above -- so the ask is honoured up to here and no further. That rung will very
+#: likely fail again; the ladder then ends and the case escalates, which is the honest
+#: outcome for an upstream that has told us it will not serve us in time.
+MAX_RETRY_DELAY_S = 90.0
+
+
+def _retry_delay(rung: int, exc: UpstreamUnavailable) -> float:
+    """How long to wait before attempt `rung + 2`, given what the upstream said.
+
+    The server's own `Retry-After` wins when it asks for longer than the ladder's rung: a
+    rate limiter knows how much of its window is left and this process does not. It cannot
+    push the wait past `MAX_RETRY_DELAY_S`, and it cannot shorten a rung either -- a provider
+    that says "0" while still refusing is a busy-wait, and the ladder's own spacing is what
+    keeps the retries from being three more 429s in a row."""
+    return min(max(RETRY_DELAYS_S[rung], exc.retry_after or 0.0), MAX_RETRY_DELAY_S)
+
 
 async def _process_one(
     pool: asyncpg.Pool,
@@ -80,21 +127,91 @@ async def _process_one(
     thresholds: GateThresholds,
     case_id: str,
 ) -> None:
-    """Run one case through the pipeline; never raise back to the read loop -- one
-    bad message or one buggy case must not take the whole worker process down, since
-    every other case waiting behind it in the stream would then never run either."""
-    try:
-        await adjudicate(case_id, pool, policy_client, member_client, llm, thresholds)
-    except LookupError:
-        # The id came off the stream but names no case (a stale message, a bad test
-        # fixture). Nothing to mark failed -- there is no row. Logged, not silent: a
-        # message that resolves to nothing is still worth knowing about.
-        logger.exception("case %s not found; dropping stream message", case_id)
-    except Exception:
-        # Decision 6: this is the one place that converts "the pipeline crashed" into
-        # a fact the reviewer queue can see, rather than a case stuck in `running`.
-        logger.exception("case %s crashed during adjudication; marking failed", case_id)
-        await cases_repo.update_status(pool, case_id, "failed")
+    """Run one case through the pipeline, retrying a transient upstream failure; never
+    raise back to the read loop -- one bad message or one buggy case must not take the
+    whole worker process down, since every other case waiting behind it in the stream
+    would then never run either.
+
+    Each retry re-runs `adjudicate` from the top, so a retried case pays for its
+    extraction again. That is the cost of not carrying a resumable half-finished case
+    through the retry, and it is worth paying: `criteria.insert_many` already
+    delete-then-inserts precisely so a second `adjudicate(case_id)` is well-defined (the
+    at-least-once stream guarantees one anyway), and a partial-resume path would be a
+    second, less-tested way for a case to reach the gate."""
+    attempts = len(RETRY_DELAYS_S) + 1
+
+    for attempt in range(1, attempts + 1):
+        try:
+            await adjudicate(case_id, pool, policy_client, member_client, llm, thresholds)
+            return
+        except LookupError:
+            # The id came off the stream but names no case (a stale message, a bad test
+            # fixture). Nothing to mark failed -- there is no row. Logged, not silent: a
+            # message that resolves to nothing is still worth knowing about.
+            logger.exception("case %s not found; dropping stream message", case_id)
+            return
+        except UpstreamUnavailable as exc:
+            # The pipeline records every *permanent* upstream failure as a determination
+            # itself, so one arriving here should always be transient. If it is not, the
+            # pipeline has a raise site nothing guards -- logged loudly, but still recorded
+            # as a determination rather than as `failed`, because "we could not obtain the
+            # evidence" is true either way and a case with no determination at all tells a
+            # reviewer strictly less.
+            exhausted = attempt == attempts
+            if exhausted or not exc.transient:
+                logger.exception(
+                    "case %s: upstream %s unavailable after %s attempt(s) (transient=%s); "
+                    "escalating",
+                    case_id,
+                    exc.service,
+                    attempt,
+                    exc.transient,
+                )
+                await record_upstream_exhausted(
+                    pool,
+                    case_id,
+                    thresholds,
+                    service=exc.service,
+                    detail=exc.detail,
+                    attempts=attempt,
+                )
+                return
+
+            delay = _retry_delay(attempt - 1, exc)
+            # Written to the audit trail before the wait, not after it: a case sitting
+            # `running` for a minute must be explicable while it is happening, and this row
+            # is the only thing that distinguishes "waiting out a rate limit" from "the
+            # worker has hung". It is also the record that makes the retry honest -- the
+            # audit claim is that everything the system did to reach a determination is in
+            # this log, and a silent retry would falsify it.
+            await case_events_repo.append(
+                pool,
+                case_id,
+                "retry",
+                {
+                    "attempt": attempt,
+                    "of": attempts,
+                    "service": exc.service,
+                    "detail": exc.detail,
+                    "retrying_in_seconds": delay,
+                },
+            )
+            logger.warning(
+                "case %s: %s unavailable (%s); attempt %s of %s, retrying in %ss",
+                case_id,
+                exc.service,
+                exc.detail,
+                attempt,
+                attempts,
+                delay,
+            )
+            await asyncio.sleep(delay)
+        except Exception:
+            # Decision 6: this is the one place that converts "the pipeline crashed" into
+            # a fact the reviewer queue can see, rather than a case stuck in `running`.
+            logger.exception("case %s crashed during adjudication; marking failed", case_id)
+            await cases_repo.update_status(pool, case_id, "failed")
+            return
 
 
 async def _read_one(

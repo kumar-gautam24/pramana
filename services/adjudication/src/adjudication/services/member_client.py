@@ -6,7 +6,8 @@ must never exist (member and adjudication each own their own database).
 
 Injected `httpx.AsyncClient` rather than one constructed here, for the same reasons as
 `policy_client`: a stub transport in tests, one shared connection pool per case, and no
-retries hidden in this layer -- see that module's docstring."""
+retries hidden in this layer -- see that module's docstring, and `worker.py` for where a
+retry does live."""
 
 from dataclasses import dataclass
 from datetime import date

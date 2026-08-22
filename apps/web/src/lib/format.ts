@@ -93,6 +93,12 @@ const STAGE_LABELS: Record<string, string> = {
   policy: "Governing policy retrieved",
   criteria: "Policy decomposed into criteria",
   criterion: "Criterion verified",
+  // Not a pipeline stage: the worker waiting out a transient upstream failure before
+  // running the case again (ADR-0020). Named as what it is rather than hidden, because the
+  // reason the retry is in the worker at all is that only the worker can put it in this log
+  // -- a reviewer looking at a case that took two minutes is owed the reason.
+  retry: "Upstream unavailable, retrying",
+  upstream_exhausted: "Gave up waiting on an upstream",
   decision: "Determination recorded",
 };
 

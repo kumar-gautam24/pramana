@@ -29,6 +29,14 @@ function stepDetail(event: CaseEvent): React.ReactNode {
       return `route ${String(payload.set_ordinal)} #${String(payload.ordinal)} → ${String(
         payload.verdict,
       )} (${String(payload.tool)})`;
+    case "retry":
+      return `${String(payload.service)}: ${String(payload.detail)} — attempt ${String(
+        payload.attempt,
+      )} of ${String(payload.of)}, waiting ${String(payload.retrying_in_seconds)}s`;
+    case "upstream_exhausted":
+      return `${String(payload.service)} still unavailable after ${String(
+        payload.attempts,
+      )} attempts: ${String(payload.detail)}`;
     case "decision":
       return <OutcomeBadge outcome={String(payload.outcome)} />;
     default:

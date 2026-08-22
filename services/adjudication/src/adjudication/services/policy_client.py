@@ -4,7 +4,9 @@ Injected `httpx.AsyncClient` rather than one constructed here: it lets tests swa
 stub transport, and it lets the pipeline share one connection pool across a case instead
 of opening one per upstream call. No retries -- a retry hidden in this layer would
 triple a case's latency with nothing in the audit trail to say why (see
-task-4-brief.md); if retrying is ever wanted, it belongs where it can be recorded."""
+task-4-brief.md); retrying belongs where it can be recorded, and `worker.py` is now
+that place (ADR-0020): it retries a transient `UpstreamUnavailable` and appends a
+`retry` event per attempt. Nothing about that belongs here."""
 
 from datetime import date
 

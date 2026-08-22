@@ -168,7 +168,16 @@ class GeminiClient:
             json=payload,
         )
         if response.status_code // 100 != 2:
-            raise UpstreamUnavailable("llm", _gemini_error_detail(response))
+            # Classified the same way `upstream.parse` would -- this branch exists only to
+            # keep Google's own error message, not to answer the transient question
+            # differently. A 429 here is an exhausted quota and is exactly the failure the
+            # worker's retry ladder exists for (ADR-0020).
+            raise UpstreamUnavailable(
+                "llm",
+                _gemini_error_detail(response),
+                transient=upstream.transient_status(response.status_code),
+                retry_after=upstream.retry_after_seconds(response),
+            )
         return upstream.parse("llm", response, path, _gemini_answer)
 
 
@@ -214,7 +223,16 @@ class OpenAICompatibleClient:
             },
         )
         if response.status_code // 100 != 2:
-            raise UpstreamUnavailable("llm", _openai_error_detail(response))
+            # Same classification as `upstream.parse`; see GeminiClient.chat above. The
+            # measured case is Groq's free tier answering 429 at 8000 tokens/minute, which
+            # is a fact about our own rate limit and must not become a clinician's queue
+            # entry (ADR-0020).
+            raise UpstreamUnavailable(
+                "llm",
+                _openai_error_detail(response),
+                transient=upstream.transient_status(response.status_code),
+                retry_after=upstream.retry_after_seconds(response),
+            )
         return upstream.parse(
             "llm",
             response,

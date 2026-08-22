@@ -69,7 +69,17 @@ the full account of why that column holds two different shapes):
 | `not_eligible`         | `CoverageStatus.INACTIVE`                   | `criterion_not_met`     |
 | `no_governing_policy`  | `PolicyClient.search` returns `[]`          | `no_criteria`           |
 | `no_criteria`          | `extract` raises `ExtractionInvalid`        | `no_criteria`           |
-| `upstream_unavailable` | `UpstreamUnavailable` from any upstream call | `insufficient_evidence` |
+| `upstream_unavailable` | a *permanent* `UpstreamUnavailable`, below   | `insufficient_evidence` |
+
+**A transient `UpstreamUnavailable` is not a short-circuit** and is deliberately not handled
+here (ADR-0020). A 429 or a 5xx is a fact about our own infrastructure, not about the
+member's record, and recording it as a determination puts a case on a clinician's queue for
+a reason no clinician can act on. Those propagate out of `adjudicate` so `worker.py` can
+retry the case with backoff and record each attempt in `case_events` -- which is where a
+retry belongs, because that is the only layer that can make it visible in the audit trail.
+`policy_client`'s docstring says why the alternative, a retry hidden in the client, is wrong.
+`record_upstream_exhausted` below is what the worker calls once the ladder runs out, so a
+case that never got its evidence still ends as a determination rather than as silence.
 
 The `not_eligible` split is deliberate, not incidental: Task 6's `coverage_active`
 verifier already maps this identical fact the same way (no record is a missing
@@ -176,6 +186,56 @@ async def _short_circuit(
     return determination
 
 
+async def _upstream_stopped(
+    pool: asyncpg.Pool, case_id: str, exc: UpstreamUnavailable, thresholds: GateThresholds
+) -> Determination:
+    """What every upstream failure in this module funnels through.
+
+    A permanent one (a schema mismatch, a 4xx) becomes the `upstream_unavailable`
+    short-circuit, exactly as every upstream failure did before ADR-0020. A transient one
+    (a 429, a 5xx, a timeout) is **re-raised instead**: it says nothing about the member's
+    record, so it must not be written down as a determination about the member's record.
+    `worker.py` catches it, backs off, and runs the case again."""
+    if exc.transient:
+        raise exc
+    return await _short_circuit(
+        pool, case_id, "upstream_unavailable", GateReason.INSUFFICIENT_EVIDENCE, thresholds
+    )
+
+
+async def record_upstream_exhausted(
+    pool: asyncpg.Pool,
+    case_id: str,
+    thresholds: GateThresholds,
+    *,
+    service: str,
+    detail: str,
+    attempts: int,
+) -> Determination:
+    """End a case whose transient upstream failure outlived the worker's retry ladder.
+
+    Called from `worker.py`, which owns the ladder; the recording lives here with the other
+    two functions that write a determination, so all three keep the same ordering guarantee
+    (transaction first, `decision` event after) and a reader looking for "where does a case
+    stop" finds one file.
+
+    The `upstream_exhausted` event is appended first and is not folded into the `decision`
+    payload: how many times we tried and what failed each time is the difference between a
+    reviewer reading "a service could not be reached" as a shrug and reading it as a
+    measurement. The determination it precedes is the ordinary `upstream_unavailable`
+    short-circuit -- the case really has no evidence behind it, however many attempts went
+    into establishing that."""
+    await case_events_repo.append(
+        pool,
+        case_id,
+        "upstream_exhausted",
+        {"service": service, "detail": detail, "attempts": attempts},
+    )
+    return await _short_circuit(
+        pool, case_id, "upstream_unavailable", GateReason.INSUFFICIENT_EVIDENCE, thresholds
+    )
+
+
 async def _persist_decision(
     pool: asyncpg.Pool,
     case_id: str,
@@ -240,10 +300,8 @@ async def adjudicate(
     # --- eligibility ------------------------------------------------------------
     try:
         coverage = await member_client.coverage(case.member_id, case.date_of_service)
-    except UpstreamUnavailable:
-        return await _short_circuit(
-            pool, case_id, "upstream_unavailable", GateReason.INSUFFICIENT_EVIDENCE, thresholds
-        )
+    except UpstreamUnavailable as exc:
+        return await _upstream_stopped(pool, case_id, exc, thresholds)
 
     if coverage is CoverageStatus.NO_RECORD:
         return await _short_circuit(
@@ -270,10 +328,8 @@ async def adjudicate(
     query = case.request_text or f"{case.requested_code} {case.icd10}"
     try:
         hits = await policy_client.search(query, case.date_of_service, POLICY_SEARCH_LIMIT)
-    except UpstreamUnavailable:
-        return await _short_circuit(
-            pool, case_id, "upstream_unavailable", GateReason.INSUFFICIENT_EVIDENCE, thresholds
-        )
+    except UpstreamUnavailable as exc:
+        return await _upstream_stopped(pool, case_id, exc, thresholds)
 
     if not hits:
         return await _short_circuit(
@@ -294,10 +350,8 @@ async def adjudicate(
         return await _short_circuit(
             pool, case_id, "no_criteria", GateReason.NO_CRITERIA, thresholds
         )
-    except UpstreamUnavailable:
-        return await _short_circuit(
-            pool, case_id, "upstream_unavailable", GateReason.INSUFFICIENT_EVIDENCE, thresholds
-        )
+    except UpstreamUnavailable as exc:
+        return await _upstream_stopped(pool, case_id, exc, thresholds)
 
     # One transaction for the delete-then-insert re-adjudication needs (finding 1, fix
     # round 1): a mid-loop failure here must roll back to the previous run's rows, not
@@ -353,9 +407,7 @@ async def adjudicate(
         (r for r in raw_results if isinstance(r, UpstreamUnavailable)), None
     )
     if upstream_failure is not None:
-        return await _short_circuit(
-            pool, case_id, "upstream_unavailable", GateReason.INSUFFICIENT_EVIDENCE, thresholds
-        )
+        return await _upstream_stopped(pool, case_id, upstream_failure, thresholds)
 
     # Anything left that is an exception is a real bug, not an expected failure mode
     # -- re-raised rather than folded into an escalation the caller could mistake for
