@@ -37,15 +37,25 @@ const PLOT_HEIGHT = HEIGHT - PADDING.top - PADDING.bottom;
 const LABEL_PITCH = 14;
 
 /**
- * Push overlapping direct labels apart, keeping their order.
+ * Push overlapping direct labels apart, keeping their order, without leaving the plot band.
  *
  * Not cosmetic. The expected shape of a good run is zero wrongful approvals at every
  * threshold, which puts that series flat on the floor and makes the total identical to the
  * wrongly-escalated series -- so two of the three labels land on exactly the same pixel and
  * one is unreadable. Since the labels are what carries identity for a reader who cannot use
  * the colours, losing one is losing the legend.
+ *
+ * Separating them is only half the answer, and the missing half was reachable on that same
+ * expected shape: three labels stacked on the floor resolve *downward* to 210, 224 and 238 in
+ * a 240-unit viewBox -- through the row the x-axis ticks occupy and with the last one's
+ * descenders clipped off the bottom edge. So the stack is pushed apart and then translated
+ * back up bodily if it overshot. Bodily, because moving one label alone would reopen the
+ * collision this function exists to close.
+ *
+ * `minY` wins if a future series count makes the stack taller than the band: a label
+ * overflowing past the axis is ugly, one overflowing past the top of the viewBox is gone.
  */
-function spread(positions: number[]): number[] {
+function spread(positions: number[], minY: number, maxY: number): number[] {
   const order = positions.map((y, index) => ({ y, index })).sort((a, b) => a.y - b.y);
   let previous = -Infinity;
   const resolved = positions.slice();
@@ -54,7 +64,10 @@ function spread(positions: number[]): number[] {
     resolved[entry.index] = y;
     previous = y;
   }
-  return resolved;
+
+  let shift = Math.min(maxY - Math.max(...resolved), 0);
+  if (Math.min(...resolved) + shift < minY) shift = minY - Math.min(...resolved);
+  return shift === 0 ? resolved : resolved.map((y) => y + shift);
 }
 
 interface Series {
@@ -111,7 +124,13 @@ export function ThresholdSweep({
     sweep.map((point) => `${x(point.min_confidence)},${y(series.value(point))}`).join(" ");
 
   const flat = sweep.every((point) => point.total_cost === first.total_cost);
-  const labelPositions = spread(SERIES.map((series) => y(series.value(last)) + 4));
+  // The band the labels may occupy is the plot's own, so a label always sits beside the
+  // curves rather than beside the axis furniture.
+  const labelPositions = spread(
+    SERIES.map((series) => y(series.value(last)) + 4),
+    PADDING.top,
+    PADDING.top + PLOT_HEIGHT,
+  );
 
   return (
     <figure className="sweep">
@@ -254,7 +273,12 @@ export function ThresholdSweep({
             {sweep.map((point) => (
               <tr
                 key={point.min_confidence}
-                className={point === best ? "row--best" : undefined}
+                // Matched on the threshold, not by reference: `best` and `sweep` cross the
+                // wire as two independent objects (`runner.report` calls `_point_to_wire`
+                // once for each), so `point === best` was never true and the row that marks
+                // the operating point never highlighted. `min_confidence` is the sweep's own
+                // key -- it is what `key` above is keyed on -- so there is exactly one match.
+                className={point.min_confidence === best?.min_confidence ? "row--best" : undefined}
               >
                 <td className="mono">{point.min_confidence.toFixed(2)}</td>
                 <td>{formatRate(point.auto_approval_rate)}</td>
