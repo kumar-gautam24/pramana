@@ -21,6 +21,29 @@ export function formatConfidence(confidence: number | null): string {
   return confidence === null ? "--" : `${Math.round(confidence * 100)}%`;
 }
 
+/**
+ * Money, with its currency symbol and cents.
+ *
+ * Every figure the eval harness produces is a count multiplied by a rate, and it is rendered
+ * that way on the screen -- this only formats the product. Cents are kept even though the
+ * rates are round numbers: a rate of $180/h over 12 minutes is $36.00 exactly, and rounding
+ * to whole dollars somewhere else in the chain is how a figure stops reconciling with the
+ * arithmetic printed beside it.
+ */
+const MONEY = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" });
+
+export function formatMoney(amount: number): string {
+  return MONEY.format(amount);
+}
+
+/** A rate as a fraction, for auto-approval and for precision/recall. */
+export function formatRate(value: number | null): string {
+  // Null is "nobody measured this", which is a different statement from 0% and must not be
+  // rendered as one -- the eval report returns null for extraction scores when no case in
+  // the run carried a human-authored criteria list.
+  return value === null ? "not measured" : `${(value * 100).toFixed(1)}%`;
+}
+
 const VERDICT_LABELS: Record<Verdict, string> = {
   met: "Met",
   not_met: "Not met",

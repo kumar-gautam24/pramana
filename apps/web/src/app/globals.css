@@ -31,6 +31,25 @@
   --neutral: #40495a;
   --neutral-bg: #eceff4;
 
+  /*
+   * Chart series. Two categorical hues plus text ink for the total, which is their sum and
+   * not a peer of them.
+   *
+   * Deliberately not the outcome palette above. Green/amber/red carry meaning everywhere else
+   * in this console -- a verdict, an outcome, a refusal -- and a cost line drawn in "approve
+   * green" would read as approval rather than as the cost of a wrong approval. Red and amber
+   * are also the classic colour-vision failure as a pair.
+   *
+   * These values are not taste. Both sets were checked against their own surface with the
+   * dataviz palette validator, all pairs: lightness band, chroma floor, deuteranope/protanope
+   * /tritanope separation, normal-vision separation, and contrast against the surface. The
+   * light pair separates by dE 20.0 at worst under simulated colour blindness, the dark pair
+   * by 23.0. Re-run the validator before changing either.
+   */
+  --series-total: #14181f;
+  --series-a: #0369a1;
+  --series-b: #b45309;
+
   --radius: 6px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
@@ -54,6 +73,13 @@
     --negative-bg: #351717;
     --neutral: #b6bfcd;
     --neutral-bg: #222834;
+
+    /* Chosen for the dark surface, not lightened from the light values: the validator's
+       lightness band for a dark surface is L 0.48-0.67, which is *darker* than the band for
+       a light one, so flipping the light pair up would fail it. */
+    --series-total: #e6e9ef;
+    --series-a: #2f92cf;
+    --series-b: #c07a1f;
   }
 }
 
@@ -520,6 +546,83 @@ button.secondary {
 .notice {
   color: var(--text-muted);
   font-size: 0.875rem;
+}
+
+/* --- threshold sweep -------------------------------------------------------------- */
+
+.sweep {
+  margin: 0;
+}
+
+.sweep__plot {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* Recessive by construction: the grid orients the eye and is not the content. */
+.sweep__grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.sweep__tick-x,
+.sweep__tick-y,
+.sweep__series-label,
+.sweep__axis-title {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.sweep__tick-y {
+  text-anchor: end;
+}
+
+.sweep__tick-x,
+.sweep__axis-title {
+  text-anchor: middle;
+}
+
+.sweep__axis-title {
+  font-family: inherit;
+  font-size: 11px;
+}
+
+/* The operating point the sweep recommends. Dashed and behind the lines, so it reads as an
+   annotation on the curves rather than as a fourth series. */
+.sweep__best-rule {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.sweep__best-dot {
+  fill: var(--series-total);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.sweep__best-label {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  text-anchor: middle;
+}
+
+.sweep__table {
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.sweep__table summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.row--best td {
+  background: var(--surface-sunken);
+  font-weight: 600;
 }
 
 /*

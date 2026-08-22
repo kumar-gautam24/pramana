@@ -35,6 +35,20 @@ export class GatewayError extends Error {
   get isForbidden(): boolean {
     return this.status === 403;
   }
+
+  /**
+   * A route that exists and refuses to pretend. `evals` answers 501 when asked for something
+   * it will not fake -- it did so for the `model_arithmetic` ablation for as long as
+   * `adjudication` had no such run mode, rather than publish a figure labelled "model
+   * arithmetic" that deterministic code had produced.
+   *
+   * Kept distinct from a failure because it is the opposite of one: the system declining to
+   * report a measurement it did not take is the behaviour this project wants. A console that
+   * rendered it as an error, or worse as a zero, would undo it.
+   */
+  get isNotImplemented(): boolean {
+    return this.status === 501;
+  }
 }
 
 function gatewayUrl(): string {
