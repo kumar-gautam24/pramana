@@ -1,69 +1,89 @@
-# apps/web — the reviewer console
+# web — the reviewer console
 
-The screen a clinician uses to pick up a case the automated gate declined to approve, read
-the evidence it assembled, watch it work, and record their own decision.
+**The surface a clinician actually works.** Port 3000. Next.js 15, React 19, TypeScript.
 
-## The one address
+Every escalated case ends up in front of a person, and this is that person's view: the queue, the
+case with its criteria and evidence, the live pipeline as it runs, the form that records their
+decision, and — for operators — the eval harness.
 
-This application holds `NEXT_PUBLIC_GATEWAY_URL` and no other backend address, and it is
-read in exactly one place: `src/lib/gateway.ts`. `adjudication`, `auth`, `policy` and
-`evals` are not reachable from the browser, so authentication, role gating and rate
-limiting cannot be routed around by a client that knows a service's port.
+## Routes
 
-There is no fallback value. `NEXT_PUBLIC_*` is inlined at build time, so a default would
-be compiled into the image and a misconfigured build would fail by talking to the wrong
-host rather than by saying so.
+| route | who | what |
+| --- | --- | --- |
+| `/login` | anyone | sign in |
+| `/cases` | any session | the reviewer queue, filtered by outcome |
+| `/cases/new` | any session | case intake |
+| `/cases/[caseId]` | any session | the case: criteria, verdicts, evidence, live steps, review form |
+| `/evals` | operator | golden cases and eval runs |
+| `/evals/runs/[runId]` | operator | a run's report, the threshold sweep, run comparison |
 
-## Dependencies
+`/` redirects to `/cases`.
 
-Four, and each one is the framework or its types:
+## How it talks to the backend
 
-| package | why |
-| --- | --- |
-| `next` | App Router, the build, the production server |
-| `react`, `react-dom` | the framework's own runtime |
-| `typescript` + `@types/*` | `npm run lint` is `tsc --noEmit`; the wire types in `src/lib/types.ts` are the check that a route change is noticed |
-
-No UI kit, no CSS framework, no data-fetching library, no state library, no ESLint config.
-Five screens do not need any of them, and each would be a configuration surface to keep
-current. Styling is one hand-written stylesheet (`src/app/globals.css`).
-
-## Layout
+**One address.** The console holds the gateway's URL and no other backend address — a grep for
+`http` outside the single gateway module finds nothing. There is no second door for a browser to
+find, and no possibility of the console reaching a service directly and asserting its own role.
 
 ```
-src/lib/gateway.ts     transport: the URL, fetch, errors, the SSE reader
-src/lib/api.ts         one function per gateway route the console calls
-src/lib/types.ts       the wire shapes, mirroring what the services return
-src/lib/session.ts     where the token lives, and who may record a review
-src/components/        small focused pieces; nothing here fetches except the screens
-src/app/               login, the queue, the case
+browser ──► /lib/gateway.ts ──► gateway :8000 ──► services
+                │
+                └── readEventStream() ──► SSE ──► live case view
 ```
 
-Every screen renders on the client and fetches with the reviewer's own token. Server
-components fetching through the gateway would put the credential on the Next.js server
-and make that server a second holder of a backend address.
+Authorisation is enforced at the gateway, and mirrored on the page. `/evals` checks the role on
+the page as well as hiding itself from the nav, because a pasted URL would otherwise render a
+screen of 403 errors — which reads as a broken system rather than as the wrong account. A `501`
+from any endpoint renders as "not built yet": calm, never an error, and never a zero.
 
-## Two things the law puts in the UI
+## Design decisions worth knowing
 
-**AI use is disclosed where it is encountered.** Utah requires it, so the disclosure is in
-the app shell on every screen and again, in specific terms, on the case screen next to the
-verdicts it describes — naming which steps a model performed and which were arithmetic.
-See `src/components/AiDisclosure.tsx`.
+**`OutcomeBadge` renders exactly two outcomes.** `approve` and `escalate` are enumerated, not
+derived from the string, and anything else is labelled "unrecognised" and shown verbatim. There
+is deliberately **no default branch**, because the one thing this console must never do is put a
+denial in front of a reviewer as though the system had issued one. A default that mapped an
+unknown value to a plausible label is the shape that failure would take.
 
-**The machine has no deny path.** It approves or it refers to a clinician (ADR-0002), and
-this console never renders a deny affordance for an automated determination — an outcome
-it does not recognise is labelled unrecognised rather than given a name. A clinician's own
-adverse decision in the review form is a different act, made by a licensed person, and is
-legitimate.
+Escalate is **amber, never red**. Red reads as refusal; an escalation is the machine handing a
+decision to a person, which is the system working as designed.
 
-## Running it
+**Intake mints its own idempotency key**, reused while the form is unchanged and re-minted when
+any field changes. So a double-click returns the first case, and an edited resubmission is not
+answered with the previous one's determination. The form states the measured retrieval result at
+the narrative field, because that is the one input whose absence degrades a determination
+silently rather than failing.
+
+**Every money figure is a count times a named rate.** The eval report never shows a bare total —
+a number nobody can decompose is a number to be believed rather than checked.
+
+**The threshold sweep is a curve with its minimum marked**, with the full table beneath it. A
+flat curve says it is flat rather than pretending to recommend an operating point.
+
+## Running and testing
 
 ```bash
-cp .env.example .env.local
+cd apps/web
 npm install
-npm run dev      # http://localhost:3000
-npm run lint     # tsc --noEmit
+npm run dev          # http://localhost:3000
+npm test             # 58 unit tests (vitest)
+npx tsc --noEmit     # the lint gate for this package
 ```
 
-Under compose the gateway address comes from the `web` block instead; `docker compose up
--d --build` builds and serves it on `${WEB_PORT:-3000}`.
+`NEXT_PUBLIC_GATEWAY_URL` is required. The gateway module refuses to build a URL without it and
+says so loudly, rather than shipping a console that points at nothing.
+
+Tests run in Node, not a browser: the two things under test are a stream parser and a component
+rendered to a string with `react-dom/server`. Neither touches a document, so a jsdom environment
+would be a dependency bought for nothing.
+
+## Caveats
+
+- **No screen in this console has ever been rendered by a person.** It compiles, it typechecks,
+  it has unit tests, and nobody has looked at it in a browser. Treat every screen as unverified —
+  in particular the intake form's error paths (bad member id, empty narrative, double submit,
+  resubmit after editing one field) and the threshold sweep chart, whose two known defects were
+  fixed by reading the code rather than by looking at the output.
+- **Unit coverage is two modules deep, not broad.** The SSE frame parser and `OutcomeBadge` are
+  well covered because their failure modes are quiet or legal. The pages have no tests.
+- **The SSE parser normalises line endings but does not reconnect.** If the stream drops, the live
+  view stops updating; the case is still progressing and the page will not say so until reloaded.
