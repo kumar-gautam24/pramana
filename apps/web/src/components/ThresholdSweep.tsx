@@ -180,36 +180,43 @@ export function ThresholdSweep({
           </g>
         ) : null}
 
-        {SERIES.map((series, index) => (
-          <g key={series.label}>
-            <polyline
-              points={points(series)}
-              fill="none"
-              stroke={series.stroke}
-              strokeWidth={series.width}
-              strokeLinejoin="round"
-              strokeLinecap="round"
-            />
-            {/* Direct label at the right-hand end, so identity survives without colour. A
-                short leader in the series' own colour keeps the pairing legible after
-                `spread` has moved a label off its line. */}
-            <line
-              x1={PADDING.left + PLOT_WIDTH}
-              x2={PADDING.left + PLOT_WIDTH + 6}
-              y1={y(series.value(last))}
-              y2={(labelPositions[index] ?? 0) - 4}
-              stroke={series.stroke}
-              strokeWidth={1}
-            />
-            <text
-              x={PADDING.left + PLOT_WIDTH + 8}
-              y={labelPositions[index]}
-              className="sweep__series-label"
-            >
-              {series.label}
-            </text>
-          </g>
-        ))}
+        {SERIES.map((series, index) => {
+          const end = y(series.value(last));
+          // `spread` returns one position per series, so the fallback is unreachable; it is
+          // here because `noUncheckedIndexedAccess` is on and falling back to the line's own
+          // end is the only answer that cannot silently draw a label at the top of the plot.
+          const labelY = labelPositions[index] ?? end + 4;
+          return (
+            <g key={series.label}>
+              <polyline
+                points={points(series)}
+                fill="none"
+                stroke={series.stroke}
+                strokeWidth={series.width}
+                strokeLinejoin="round"
+                strokeLinecap="round"
+              />
+              {/* Direct label at the right-hand end, so identity survives without colour. A
+                  short leader in the series' own colour keeps the pairing legible after
+                  `spread` has moved a label off its line. */}
+              <line
+                x1={PADDING.left + PLOT_WIDTH}
+                x2={PADDING.left + PLOT_WIDTH + 6}
+                y1={end}
+                y2={labelY - 4}
+                stroke={series.stroke}
+                strokeWidth={1}
+              />
+              <text
+                x={PADDING.left + PLOT_WIDTH + 8}
+                y={labelY}
+                className="sweep__series-label"
+              >
+                {series.label}
+              </text>
+            </g>
+          );
+        })}
       </svg>
 
       <figcaption className="hint">

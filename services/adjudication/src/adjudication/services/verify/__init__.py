@@ -97,11 +97,20 @@ def _unusable_comparison(criterion: Criterion, exc: ArithmeticUnusable) -> Verif
 
 
 async def verify(
-    criterion: Criterion, case: Case, member_client: MemberClient, llm: LLMProvider
+    criterion: Criterion,
+    case: Case,
+    member_client: MemberClient,
+    llm: LLMProvider,
+    arithmetic: Arithmetic | None = None,
 ) -> Verification:
     """Verify one already-validated criterion. `threshold`/`enum`/`temporal` reach `llm`
     only through the ablation's `Arithmetic`; `judgment` never receives a bare fact value
-    to compare -- see the two submodules' own docstrings for what each does and why."""
+    to compare -- see the two submodules' own docstrings for what each does and why.
+
+    `arithmetic` is normally supplied by `verify_all`, which builds **one per case**: the
+    ablated implementation serialises its own model calls, and a fresh instance per criterion
+    would give each its own lock and serialise nothing. Defaulted for a caller verifying a
+    single criterion on its own, where there is nothing to serialise against."""
     # Imported inside the function, not at module level: both submodules import
     # `Verification` from this package, so importing them here at module scope would
     # be circular. By the time `verify()` is actually called, this package has already
@@ -111,7 +120,7 @@ async def verify(
     if criterion.type in DETERMINISTIC_TYPES:
         try:
             return await deterministic.verify(
-                criterion, case, member_client, _arithmetic(case, llm)
+                criterion, case, member_client, arithmetic or _arithmetic(case, llm)
             )
         except ArithmeticUnusable as exc:
             # Caught here rather than inside `deterministic.py` so that module keeps no
@@ -147,8 +156,12 @@ async def verify_all(
     judgment_indices = [i for i, c in enumerate(criteria) if c.type not in DETERMINISTIC_TYPES]
     judgment_criteria = [criteria[i] for i in judgment_indices]
 
+    # One instance for the whole case, not one per criterion. `ModelArithmetic` holds the
+    # lock that keeps an ablated case from firing every comparison at the provider at once,
+    # and a lock nobody else holds is not a lock.
+    arithmetic = _arithmetic(case, llm)
     deterministic_calls = [
-        verify(c, case, member_client, llm)
+        verify(c, case, member_client, llm, arithmetic)
         for c in criteria
         if c.type in DETERMINISTIC_TYPES
     ]
