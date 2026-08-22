@@ -125,15 +125,43 @@ the problem.
 
 ### Measured
 
-One eval run has been scored, over **three golden cases**:
+**There is no cost figure, and the one this section used to carry has been withdrawn.**
 
-| | |
-| --- | --- |
-| wrongly auto-approved | **$0** |
-| wrongly escalated | **$72** of clinician time |
+It read `$0` wrongly auto-approved and `$72` of clinician time wrongly escalated, over three
+golden cases. Two of those three never reached the gate: they exhausted the retry ladder
+against the model provider's rate limit and were short-circuited `upstream_unavailable`. The
+harness scored them as escalations anyway, so one of the two $36 charges making up that $72 was
+a rate limit priced as a clinical judgment. The bug is fixed — `evals.runner` now records an
+unreachable upstream as unfinished, which is what that module's own docstring always said it
+would do — and the number is withdrawn rather than restated, because a corrected figure over
+the one remaining case is not a figure.
 
-That is the entire cost result this project has. Three cases is not a sample; it is a
-demonstration that the number exists and has units.
+**The signature ablation has now been run, and it did not produce a delta.** Both arms, same
+commit (`f82fb4a`), same model (`openai/gpt-oss-120b`), same five golden cases, 2026-08-22:
+
+| | baseline (`none`) | ablated (`model_arithmetic`) |
+| --- | --- | --- |
+| reached the gate | 4 of 5 | **0 of 5** |
+| short-circuited `upstream_unavailable` | 1 | **5** |
+| comparison criteria evaluated | 49 | 21 (17 by the model) |
+| wall clock | 372 s | 610 s |
+
+The case-level delta was **exactly zero on every metric**, with no disagreements, and the pair
+was certified `comparable`. That zero is an artifact and is reported here as one. The ablated
+arm sends a model call for every deterministic criterion instead of comparing in Python, which
+against this provider's ceiling of 8,000 tokens per minute exhausted the retry ladder on all
+five cases; it adjudicated nothing. Scored as escalations — which is what the harness did until
+today — that run reported figures identical to the baseline's, so a run that decided nothing
+read as perfect agreement with one that decided four fifths of the set.
+
+**The measured result is therefore about the apparatus, not about the thesis.** Three
+conditions ADR-0003's experiment needs are now known to be unmet, and every one of them was
+invisible to a green build: the harness could price an outage as a determination; the
+comparison endpoint certifies that two runs share a commit, model and prompt version and differ
+only in their ablation, but not that either arm produced an adjudication; and the ablated arm
+cannot finish a single case on an 8,000 TPM key. The delta stays unmeasured, and no number for
+it appears here or in [ADR-0003](docs/decisions/0003-ai-extracts-rules-code-checks-facts.md)
+until a run produces one from two arms that both reached the gate.
 
 Three qualitative results, each from a live run against the real corpus, real member records
 and a real model:
@@ -160,28 +188,34 @@ and a real model:
 
 - **Auto-approval rate.** No case has approved end to end yet, and the reason is data, not
   logic — see below.
-- **Extraction precision and recall** against a human-authored criteria list. The extraction
-  above was read and judged correct by a person; it was not scored.
+- **Extraction precision and recall** against a human-authored criteria list. The harness does
+  compute an F1 per case, and on 2026-08-22 it returned **0.0 on all five cases in both arms**,
+  with `matched_count: 0` every time — the extractor's criteria never matched a single one of
+  the human-authored `expected_criteria` strings. Whether that is a real disagreement about what
+  NCD 240.4 requires or a matching rule comparing prose to prose is itself unmeasured, so the
+  metric currently reports nothing usable and is listed here rather than above.
 - **Verdict accuracy and citation correctness** per criterion.
 - **The threshold sweep**, and therefore the chosen operating point.
-- **The signature ablation** — the run that has the model do the arithmetic instead of SQL, to
-  prove invariant 2 empirically. It is **built and not yet run**
-  ([ADR-0021](docs/decisions/0021-model-arithmetic-as-a-run-mode.md)): `cases.run_mode` selects
-  who performs the comparisons, the difference between the two arms lives in one module, and
-  `POST /eval-runs` no longer answers 501. No run has been executed, so there is no error rate
-  here and there must not be one until there is.
-- **The golden set is three cases** against a design target of sixty, of which at least twenty
+- **The signature ablation's delta.** The pair has been run (see *Measured*); the ablated arm
+  reached the gate on none of its five cases, so there is no delta and there must not be a
+  number here until two arms both finish.
+- **The golden set is five cases** against a design target of sixty, of which at least twenty
   must escalate and at least eight be near-miss ([ADR-0009](docs/decisions/0009-near-miss-cases-required.md)).
 
 ### Known open
 
-- **No case can currently approve, and the code is not why.** The model correctly extracts NCD
-  240.4's *procedural* requirements alongside its clinical ones — that the study was ordered by
-  the treating physician, that the supplier educated the beneficiary. Those are genuinely in the
-  policy, and the generated member charts do not document them, so those criteria return
-  `insufficient_evidence` and the gate correctly refuses to approve. The generator now writes a
-  referring physician's order into the record; the seeded population has not been regenerated
-  against it.
+- **No case can currently approve, and the code is still not why — but the remaining gap is now
+  exactly one criterion wide.** The model correctly extracts NCD 240.4's *procedural*
+  requirements alongside its clinical ones — that the study was ordered by the treating
+  physician, that the supplier educated the beneficiary. Those are genuinely in the policy, and
+  the generated member charts did not document them. The population was regenerated on
+  2026-08-22 against a `member` image that writes a referring physician's order, and the
+  adjudicator confirms it: on member p1 the order criterion now returns **met at confidence
+  0.95**. What blocks that case is a single remaining criterion — *"the CPAP provider performed
+  education of the beneficiary on proper device use prior to therapy"* — which the generator
+  models nowhere, exactly as it modelled no physician's order six days earlier. Adding it is a
+  generator change, but it decides whether golden case 2's human `approve` label is reachable,
+  so it is a question about the label and not a fixture tweak to be made quietly.
 - **The eval harness has never been pointed at a golden set worth the name.** Three cases,
   against a target of sixty. Every number the harness can produce is therefore a demonstration
   that the measurement exists rather than a measurement. Labels are human-authored by rule
