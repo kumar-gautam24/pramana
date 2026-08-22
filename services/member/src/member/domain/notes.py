@@ -62,6 +62,27 @@ _PHRASINGS: dict[str, tuple[str, ...]] = {
     ),
 }
 
+#: NCD 240.4 requires the sleep test to have been ordered by the treating physician and
+#: furnished under appropriate physician supervision. That is a *procedural* requirement
+#: rather than a clinical one, and it was the last thing standing between a fully
+#: qualifying member and an approval: the AHI cleared its threshold and the study type
+#: was valid, but no note said who ordered the study, so the criterion could only ever
+#: come back insufficient_evidence and no case could ever be approved.
+#:
+#: Phrased in the referring clinician's own voice, and deliberately not containing the
+#: words "ordered", "treating physician" or "supervision" -- the same anti-leak rule the
+#: module docstring sets out for symptoms. A note echoing the criterion's wording would
+#: turn this judgment call into a substring match and flatter every number this project
+#: publishes.
+ORDER_PROVENANCE = (
+    "Polysomnography was arranged at this visit and carried out under my referral at "
+    "the affiliated sleep laboratory.",
+    "I sent the patient for an overnight sleep evaluation following this consultation; "
+    "the study was performed under my care.",
+    "Overnight testing was requested by me at the conclusion of this visit and "
+    "conducted at the regional sleep centre under my direction.",
+)
+
 #: A visit still needs an opening sentence when no symptoms are documented at all --
 #: otherwise the empty-symptom case would be distinguishable from a real note by
 #: length alone, which is its own kind of leak.
@@ -130,7 +151,12 @@ def generate_note(
     note_date: date,
     symptoms: list[str],
     benefits: list[str] | None = None,
+    documents_order: bool = False,
 ) -> str:
+    """`documents_order=True` records that the clinician writing this note referred the
+    patient for the sleep study -- what NCD 240.4's physician-order criterion asks about.
+    Defaulting to False keeps a caller able to produce a chart that is silent on the
+    point, which is what makes the criterion refusable rather than merely always met."""
     unknown_symptoms = [s for s in symptoms if s not in _PHRASINGS]
     if unknown_symptoms:
         # Silently documenting nothing for a misspelled symptom would produce a
@@ -143,6 +169,10 @@ def generate_note(
         raise ValueError(f"unknown benefit indicator(s): {unknown_benefits!r}")
 
     sentences = [_OPENER]
+    if documents_order:
+        sentences.append(
+            _rng(member_id, seed, note_date, "order").choice(ORDER_PROVENANCE)
+        )
     for symptom in symptoms:
         sentences.append(_rng(member_id, seed, note_date, symptom).choice(_PHRASINGS[symptom]))
     # benefits=None (or []) documents no benefit at all -- the continuation
