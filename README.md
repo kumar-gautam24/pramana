@@ -85,10 +85,14 @@ eligibility ─► governing policy ─► decompose into criteria
                               any insufficient ────────► ESCALATE
 ```
 
-The design numbers a `normalize` stage first, turning free text into a CPT code and an
-ICD-10 code. It is **not built**: a case arrives carrying its codes, and its submitted
-narrative is what the policy search runs on. Whoever builds intake either adds that stage or
-strikes it from the spec.
+The design numbered a `normalize` stage first, turning free text into a CPT code and an
+ICD-10 code. It is **struck**, not deferred — see
+[ADR-0018](docs/decisions/0018-no-normalize-stage.md). A prior-authorization request arrives
+with its codes already assigned by the submitter's billing system, and asking a model to
+produce them instead would put a model-generated fact at the one point in the pipeline nothing
+downstream re-checks. The narrative a submission does carry is retrieval input: measured on
+this corpus, a search built from the codes alone reaches one of the five passages that decide
+these cases, and the same search with a narrative reaches four.
 
 **The model decides what the rules are. Deterministic code checks the facts they point at.**
 It extracts criteria from policy prose it has never seen, classifies each by type, and emits

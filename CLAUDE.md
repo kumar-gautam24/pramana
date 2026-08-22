@@ -78,9 +78,10 @@ for a claim. The system asserts nothing it lacks pramāṇa for.
 | `member` | 8005 | synthetic member records: eligibility, sleep studies, procedures, notes |
 | `web` | 3000 | reviewer console. Talks to the gateway and nothing else. |
 
-A case moves through: normalize → eligibility → find governing policy → decompose into
-criteria → verify each criterion in parallel → aggregate under the asymmetric gate → persist.
-Each stage emits a domain event; the console renders those events live over SSE.
+A case moves through: eligibility → find governing policy → decompose into criteria →
+verify each criterion in parallel → aggregate under the asymmetric gate → persist. Each stage
+emits a domain event; the console renders those events live over SSE. The design's original
+first stage, `normalize` (free text → codes), was struck rather than built — see ADR-0018.
 
 ## Working discipline
 

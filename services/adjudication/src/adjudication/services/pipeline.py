@@ -1,10 +1,13 @@
 """The six-stage pipeline: `started -> eligibility -> policy -> criteria ->
 criterion (one per criterion) -> decision`.
 
-Per the task-7 brief's own resolution of the design spec's stage list: the spec's
-`normalize` stage (free text -> codes) has no home here -- `cases.requested_code` and
-`cases.icd10` already arrive set and NOT NULL (migrations/0001), so there is no free
-text for a `normalize` stage to act on within this task's schema.
+Six, not the design's seven: the spec's `normalize` stage (free text -> codes) was
+**struck**, not deferred -- see ADR-0018. `cases.requested_code` and `cases.icd10`
+arrive set and NOT NULL (migrations/0001) because the submitter's billing system
+already assigned them, and asking a model to produce them instead would place a
+model-generated fact at the one point in this pipeline that nothing downstream
+re-checks. The narrative a submission does carry is `request_text`, and its job is
+retrieval (see the policy stage below), not identification.
 
 Each stage appends exactly one `case_events` row, via `repositories.case_events.append`,
 naming itself with the stage's own string as `type`. A stage that never completes --
