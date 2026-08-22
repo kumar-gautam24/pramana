@@ -6,6 +6,8 @@ single reads and the early `queued` -> `running` transition use, since neither n
 to share a transaction with anything else). See `repositories/case_events.py` for the
 one place in this service where *not* sharing a transaction is load-bearing."""
 
+import json
+
 import asyncpg
 
 from adjudication.models.case import Case
@@ -107,3 +109,64 @@ async def update_status(conn, case_id: str, status: str) -> Case | None:
         status,
     )
     return _row_to_case(row) if row is not None else None
+
+
+async def list_with_determinations(
+    conn, *, outcome: str | None = None, status: str | None = None, limit: int = 100
+) -> list[dict]:
+    """Cases with their current determination attached, newest first -- what the review
+    queue is made of.
+
+    The determination is joined via a lateral picking the newest row per case, because a
+    case may be adjudicated more than once and the current answer is the latest one (see
+    `determinations`' own comment in migration 0001 about why superseded rows survive). A
+    plain join would return one row per attempt and show a reviewer the same case twice,
+    once with an answer that is no longer true.
+
+    Ordered by `created_at DESC, id DESC`: the timestamp alone is not a total order, and
+    two cases submitted in the same millisecond must still come back in a stable order or
+    a paging reviewer sees one twice and another never.
+    """
+    conditions = []
+    args: list[object] = []
+
+    if status is not None:
+        args.append(status)
+        conditions.append(f"c.status = ${len(args)}")
+    if outcome is not None:
+        args.append(outcome)
+        conditions.append(f"d.outcome = ${len(args)}")
+
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    args.append(limit)
+
+    rows = await conn.fetch(
+        f"""
+        SELECT {', '.join(f'c.{column.strip()}' for column in _COLUMNS.split(','))},
+               d.outcome, d.reason, d.blocking, d.winning_set, d.created_at AS decided_at
+        FROM cases c
+        LEFT JOIN LATERAL (
+            SELECT outcome, reason, blocking, winning_set, created_at
+            FROM determinations
+            WHERE case_id = c.id
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+        ) d ON true
+        {where}
+        ORDER BY c.created_at DESC, c.id DESC
+        LIMIT ${len(args)}
+        """,
+        *args,
+    )
+
+    return [
+        {
+            "case": _row_to_case(row),
+            "outcome": row["outcome"],
+            "reason": row["reason"],
+            "blocking": json.loads(row["blocking"]) if row["blocking"] is not None else None,
+            "winning_set": row["winning_set"],
+            "decided_at": row["decided_at"],
+        }
+        for row in rows
+    ]

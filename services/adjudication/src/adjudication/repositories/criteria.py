@@ -90,3 +90,42 @@ async def insert_many(conn, case_id: str, sets: list[ExtractedSet]) -> list[Crit
             criteria.append(_row_to_criterion(row))
         criteria_sets.append(CriteriaSet(ordinal=extracted_set.ordinal, criteria=tuple(criteria)))
     return criteria_sets
+
+
+async def list_for_case_with_results(conn, case_id: str) -> list[dict]:
+    """Every criterion of a case with its verdict and evidence, ordered by set then
+    position -- what the case-detail screen renders.
+
+    A criterion with no result is included, with nulls. That happens when verification
+    was cut short (an upstream failed partway), and omitting those rows would show a
+    reviewer a shorter policy than the one the case was actually judged against."""
+    rows = await conn.fetch(
+        """
+        SELECT c.id, c.set_ordinal, c.ordinal, c.text, c.type, c.params,
+               c.source_chunk_id, c.source_display_id,
+               r.verdict, r.confidence, r.tool, r.evidence
+        FROM criteria c
+        LEFT JOIN criterion_results r ON r.criterion_id = c.id
+        WHERE c.case_id = $1
+        ORDER BY c.set_ordinal, c.ordinal, c.id
+        """,
+        case_id,
+    )
+
+    return [
+        {
+            "id": str(row["id"]),
+            "set_ordinal": row["set_ordinal"],
+            "ordinal": row["ordinal"],
+            "text": row["text"],
+            "type": row["type"],
+            "params": json.loads(row["params"]),
+            "source_chunk_id": row["source_chunk_id"],
+            "source_display_id": row["source_display_id"],
+            "verdict": row["verdict"],
+            "confidence": row["confidence"],
+            "tool": row["tool"],
+            "evidence": json.loads(row["evidence"]) if row["evidence"] is not None else None,
+        }
+        for row in rows
+    ]

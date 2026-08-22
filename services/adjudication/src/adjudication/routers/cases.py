@@ -1,16 +1,18 @@
 """The /cases resource: submit a case (enqueued for the worker, idempotent on a
-caller-supplied key) and read one back. Orchestration lives in
-`services.intake.submit_case`; this module only validates the request shape and shapes
-the response."""
+caller-supplied key), list the queue, read one case back with its criteria and evidence,
+and record a clinician's review. Orchestration lives in `services.intake.submit_case`;
+this module validates request shapes and shapes responses."""
 
 from datetime import date
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from adjudication.models.case import Case
 from adjudication.repositories import cases as cases_repo
+from adjudication.repositories import criteria as criteria_repo
+from adjudication.repositories import reviews as reviews_repo
 from adjudication.services.intake import submit_case
 
 router = APIRouter()
@@ -71,3 +73,130 @@ async def get_case(case_id: str, request: Request) -> dict:
     if case is None:
         raise HTTPException(status_code=404, detail="case not found")
     return _case_to_wire(case)
+
+
+class ReviewIn(BaseModel):
+    """A clinician's own decision on an escalated case.
+
+    `outcome` is deliberately unconstrained here, unlike a determination's: a licensed
+    clinician may issue an adverse decision and the machine may not (ADR-0002), which is
+    the whole reason `reviews` is a separate table. The closed vocabulary a reviewer may
+    record is a regulatory question plan 07 settles; until then this accepts what the
+    clinician types rather than guessing a set no code has ever produced.
+
+    `agreed_with_system` is the flywheel: one boolean that turns clinical work into eval
+    data. Required, not defaulted -- a default would silently record agreement nobody
+    expressed."""
+
+    outcome: str = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    agreed_with_system: bool
+
+
+@router.get("/cases")
+async def list_cases(
+    request: Request,
+    outcome: str | None = None,
+    status: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """The review queue. Filtered by determination outcome (`escalate` for the work
+    queue) or by pipeline status, newest first."""
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+
+    rows = await cases_repo.list_with_determinations(
+        request.app.state.pool, outcome=outcome, status=status, limit=limit
+    )
+    return [
+        {
+            **_case_to_wire(row["case"]),
+            "determination": (
+                None
+                if row["outcome"] is None
+                else {
+                    "outcome": row["outcome"],
+                    "reason": row["reason"],
+                    "blocking": row["blocking"],
+                    "winning_set": row["winning_set"],
+                    "decided_at": row["decided_at"].isoformat(),
+                }
+            ),
+        }
+        for row in rows
+    ]
+
+
+@router.get("/cases/{case_id}/criteria")
+async def list_case_criteria(case_id: str, request: Request) -> dict:
+    """Every criterion of the case with its verdict, confidence, tool and evidence,
+    grouped into the alternative sets the policy decomposed into (ADR-0011).
+
+    Grouped here rather than left to the client: which criteria belong to one satisfiable
+    set is a fact about the policy, and a caller reassembling it from a flat list could
+    get it wrong in a way that would misrepresent why a case was refused."""
+    pool = request.app.state.pool
+    if await cases_repo.get(pool, case_id) is None:
+        raise HTTPException(status_code=404, detail="case not found")
+
+    criteria = await criteria_repo.list_for_case_with_results(pool, case_id)
+
+    sets: dict[int, list[dict]] = {}
+    for criterion in criteria:
+        sets.setdefault(criterion["set_ordinal"], []).append(criterion)
+
+    return {
+        "case_id": case_id,
+        "sets": [
+            {"set_ordinal": ordinal, "criteria": sets[ordinal]} for ordinal in sorted(sets)
+        ],
+    }
+
+
+@router.get("/cases/{case_id}/reviews")
+async def list_case_reviews(case_id: str, request: Request) -> list[dict]:
+    reviews = await reviews_repo.list_for_case(request.app.state.pool, case_id)
+    return [
+        {
+            "id": review.id,
+            "clinician_id": review.clinician_id,
+            "outcome": review.outcome,
+            "rationale": review.rationale,
+            "agreed_with_system": review.agreed_with_system,
+            "created_at": review.created_at.isoformat(),
+        }
+        for review in reviews
+    ]
+
+
+@router.post("/cases/{case_id}/review", status_code=201)
+async def create_review(case_id: str, payload: ReviewIn, request: Request) -> dict:
+    """Record a clinician's decision.
+
+    The clinician is taken from the `X-Pramana-User-Id` header the gateway writes after
+    resolving the session -- not from the request body. A body field would let a caller
+    attribute their decision to another clinician, and this row is the record of who
+    made an adverse determination, which Illinois law is specifically about.
+    """
+    clinician_id = request.headers.get("x-pramana-user-id", "")
+    if not clinician_id:
+        raise HTTPException(
+            status_code=401,
+            detail="no authenticated clinician; this route is reached through the gateway",
+        )
+
+    pool = request.app.state.pool
+    if await cases_repo.get(pool, case_id) is None:
+        raise HTTPException(status_code=404, detail="case not found")
+
+    async with pool.acquire() as conn:
+        review = await reviews_repo.insert(
+            conn,
+            case_id=case_id,
+            clinician_id=clinician_id,
+            outcome=payload.outcome,
+            rationale=payload.rationale,
+            agreed_with_system=payload.agreed_with_system,
+        )
+
+    return {"id": review.id, "case_id": review.case_id, "created_at": review.created_at.isoformat()}
