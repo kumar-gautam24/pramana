@@ -52,6 +52,15 @@ _MODEL_TOOL_PREFIX = "model_arithmetic:"
 _JUDGMENT_TOOL = "judgment"
 
 
+#: The name `adjudication.services.pipeline._short_circuit` writes into a determination's
+#: `blocking` when it could not reach an upstream at all. Duplicated here rather than
+#: imported because `evals` reads adjudication over HTTP and shares no package with it --
+#: the coupling is real either way, and a named constant with this comment is the honest
+#: form of it. If that string changes, this harness silently starts scoring infrastructure
+#: failures as clinical escalations again, so it is also asserted in the tests.
+_UPSTREAM_UNAVAILABLE = "upstream_unavailable"
+
+
 def _decision_from(events: list[dict[str, Any]]) -> dict[str, Any] | None:
     """The case's final `decision` event, not its first.
 
@@ -153,6 +162,25 @@ async def _run_one(
     error = None
     if decision is None or status != "decided":
         error = f"no determination (status {status})"
+    elif _UPSTREAM_UNAVAILABLE in (decision.get("blocking") or []):
+        # A case the pipeline could not obtain evidence for is unfinished, not escalated.
+        # It carries a determination -- `pipeline._short_circuit` writes one so the case is
+        # never invisible to the reviewer queue -- but that determination is a statement
+        # about our infrastructure, not about the member's record, and scoring it as an
+        # escalation makes a rate limit indistinguishable from a clinical judgment in every
+        # figure this harness publishes.
+        #
+        # Measured 2026-08-22, and it is why this is a guard rather than a nicety: the
+        # `model_arithmetic` arm sends one model call per deterministic criterion, exhausted
+        # its retry ladder against an 8000 TPM ceiling on all five golden cases, and reached
+        # the gate on none of them. Scored as escalations, that run reported
+        # `correct_escalate 3, wrongly_escalated 2` -- identical to the baseline, for a
+        # case-level delta of exactly zero on every metric, with `unfinished: 0`. A run that
+        # adjudicated nothing at all read as perfect agreement with one that adjudicated
+        # four of five. The comparison endpoint could not catch it either: it checks that
+        # the two runs share a commit, model, prompt and differ only in ablation, and these
+        # did.
+        error = f"upstream unavailable, reached no gate (reason {decision.get('reason')})"
     else:
         try:
             outcome = Outcome(decision["outcome"])
