@@ -1,0 +1,677 @@
+/*
+ * Hand-written CSS, no framework. The console is five screens; a utility framework or a
+ * component library would be a build step, a configuration surface and a vocabulary to
+ * learn, in exchange for styling that fits on one page.
+ *
+ * Colour carries meaning here, so it is defined once and used by name:
+ *   - approve is green,
+ *   - escalate is amber and never red. Red reads as refusal, and an escalation is not
+ *     one -- it is the machine handing a decision to a person. See ADR-0002.
+ *   - a NOT_MET criterion is red, because that one really is a negative finding about
+ *     the record. The distinction between a criterion's verdict and a case's outcome is
+ *     the whole point, and the palette has to keep it.
+ */
+
+:root {
+  --bg: #f7f8fa;
+  --surface: #ffffff;
+  --surface-sunken: #f1f3f6;
+  --border: #dfe3ea;
+  --border-strong: #c6ccd8;
+  --text: #14181f;
+  --text-muted: #5b6472;
+  --accent: #1d4ed8;
+
+  --approve: #146c43;
+  --approve-bg: #e6f4ec;
+  --escalate: #8a5300;
+  --escalate-bg: #fdf3e2;
+  --negative: #a32020;
+  --negative-bg: #fbeaea;
+  --neutral: #40495a;
+  --neutral-bg: #eceff4;
+
+  /*
+   * Chart series. Two categorical hues plus text ink for the total, which is their sum and
+   * not a peer of them.
+   *
+   * Deliberately not the outcome palette above. Green/amber/red carry meaning everywhere else
+   * in this console -- a verdict, an outcome, a refusal -- and a cost line drawn in "approve
+   * green" would read as approval rather than as the cost of a wrong approval. Red and amber
+   * are also the classic colour-vision failure as a pair.
+   *
+   * These values are not taste. Both sets were checked against their own surface with the
+   * dataviz palette validator, all pairs: lightness band, chroma floor, deuteranope/protanope
+   * /tritanope separation, normal-vision separation, and contrast against the surface. The
+   * light pair separates by dE 20.0 at worst under simulated colour blindness, the dark pair
+   * by 23.0. Re-run the validator before changing either.
+   */
+  --series-total: #14181f;
+  --series-a: #0369a1;
+  --series-b: #b45309;
+
+  --radius: 6px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1319;
+    --surface: #161b23;
+    --surface-sunken: #1c222c;
+    --border: #262d38;
+    --border-strong: #3a4351;
+    --text: #e6e9ef;
+    --text-muted: #9aa4b4;
+    --accent: #7aa2f7;
+
+    --approve: #6ed49b;
+    --approve-bg: #13301f;
+    --escalate: #e8b667;
+    --escalate-bg: #33260f;
+    --negative: #f08c8c;
+    --negative-bg: #351717;
+    --neutral: #b6bfcd;
+    --neutral-bg: #222834;
+
+    /* Chosen for the dark surface, not lightened from the light values: the validator's
+       lightness band for a dark surface is L 0.48-0.67, which is *darker* than the band for
+       a light one, so flipping the light pair up would fail it. */
+    --series-total: #e6e9ef;
+    --series-a: #2f92cf;
+    --series-b: #c07a1f;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  line-height: 1.25;
+}
+
+h1 {
+  font-size: 1.35rem;
+}
+
+h2 {
+  font-size: 1.05rem;
+}
+
+h3 {
+  font-size: 0.9rem;
+}
+
+/* --- app shell ------------------------------------------------------------------- */
+
+.shell {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.shell__header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.shell__brand {
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  color: var(--text);
+}
+
+.shell__brand span {
+  color: var(--text-muted);
+  font-weight: 400;
+  margin-left: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.shell__nav {
+  display: flex;
+  gap: 1rem;
+  font-size: 0.9rem;
+}
+
+.shell__spacer {
+  flex: 1;
+}
+
+.shell__identity {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.shell__main {
+  flex: 1;
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+/* --- disclosure ------------------------------------------------------------------ */
+
+/*
+ * Utah requires AI use to be disclosed wherever a person encounters it, so this is not
+ * decoration and must not be dismissible, collapsed by default, or rendered below the
+ * fold on the screens where a reviewer reads a machine-produced verdict.
+ */
+.disclosure {
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--accent);
+  background: var(--surface-sunken);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.disclosure strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.disclosure ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.1rem;
+}
+
+/* Flattened edge-to-edge when it is the shell's standing banner, rounded when it sits
+   inside a page's own stack. Same component either way -- the disclosure text must not
+   have two versions that could drift. */
+.shell > .disclosure {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  padding: 0.5rem 1.5rem;
+}
+
+/* --- cards and tables ------------------------------------------------------------ */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.25rem;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.stack--tight {
+  gap: 0.5rem;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.table th {
+  text-align: left;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.table td {
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.table tr:last-child td {
+  border-bottom: none;
+}
+
+.mono {
+  font-family: var(--mono);
+  font-size: 0.85em;
+}
+
+.muted {
+  color: var(--text-muted);
+}
+
+.small {
+  font-size: 0.85rem;
+}
+
+/* --- badges ---------------------------------------------------------------------- */
+
+.badge {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+.badge--approve {
+  color: var(--approve);
+  background: var(--approve-bg);
+}
+
+.badge--escalate {
+  color: var(--escalate);
+  background: var(--escalate-bg);
+}
+
+.badge--negative {
+  color: var(--negative);
+  background: var(--negative-bg);
+}
+
+.badge--neutral {
+  color: var(--neutral);
+  background: var(--neutral-bg);
+}
+
+.tag {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-family: var(--mono);
+}
+
+/* --- criteria -------------------------------------------------------------------- */
+
+.set {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.set__header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--border);
+}
+
+.criterion {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.criterion:last-child {
+  border-bottom: none;
+}
+
+.criterion--blocking {
+  border-left: 3px solid var(--escalate);
+  padding-left: calc(1rem - 3px);
+}
+
+.criterion__text {
+  margin: 0 0 0.4rem;
+}
+
+.evidence {
+  margin-top: 0.5rem;
+  background: var(--surface-sunken);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.75rem;
+  font-size: 0.85rem;
+}
+
+.evidence dl {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.15rem 0.75rem;
+}
+
+.evidence dt {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.evidence dd {
+  margin: 0;
+}
+
+.quote {
+  border-left: 2px solid var(--border-strong);
+  margin: 0.35rem 0;
+  padding-left: 0.6rem;
+  font-style: italic;
+}
+
+.quote--ungrounded {
+  border-left-color: var(--negative);
+  color: var(--text-muted);
+}
+
+/* --- step stream ----------------------------------------------------------------- */
+
+.steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.step {
+  display: grid;
+  grid-template-columns: 3.5rem 1fr auto;
+  gap: 0.75rem;
+  align-items: baseline;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.9rem;
+}
+
+.step:last-child {
+  border-bottom: none;
+}
+
+.step__seq {
+  font-family: var(--mono);
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.step__detail {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+}
+
+.live {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--escalate);
+  font-weight: 600;
+}
+
+.live::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* --- forms ----------------------------------------------------------------------- */
+
+label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+input[type="text"],
+input[type="email"],
+input[type="password"],
+select,
+textarea {
+  width: 100%;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 400;
+  margin-bottom: 0;
+}
+
+button {
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius);
+  border: 1px solid transparent;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+button.secondary {
+  background: transparent;
+  color: var(--text-muted);
+  border-color: var(--border-strong);
+}
+
+.field {
+  margin-bottom: 0.85rem;
+}
+
+/* Two columns where the fields are short and paired (a code and a diagnosis, a date and a
+   request kind), one where the viewport cannot hold two. */
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+  gap: 0 1rem;
+}
+
+.fields--wide {
+  grid-column: 1 / -1;
+}
+
+/* Guidance under a field, distinct from a validation error and from body text. Used where a
+   field's value changes what the system can do rather than merely being required. */
+.hint {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  margin: 0.3rem 0 0;
+}
+
+.error {
+  color: var(--negative);
+  background: var(--negative-bg);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+}
+
+.notice {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+/* --- run comparison -------------------------------------------------------------- */
+
+/*
+ * A signed difference between a run and its ablated twin. Only cost deltas are coloured:
+ * "more expensive" is unambiguously worse, while more wrongful approvals and more wrongful
+ * escalations are both worse and worse in different currencies — colouring those the same
+ * would flatten the asymmetry the whole project is about.
+ */
+.delta {
+  font-weight: 600;
+}
+
+.delta--worse {
+  color: var(--negative);
+}
+
+.delta--better {
+  color: var(--approve);
+}
+
+/* --- threshold sweep -------------------------------------------------------------- */
+
+.sweep {
+  margin: 0;
+}
+
+.sweep__plot {
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+/* Recessive by construction: the grid orients the eye and is not the content. */
+.sweep__grid {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.sweep__tick-x,
+.sweep__tick-y,
+.sweep__series-label,
+.sweep__axis-title {
+  fill: var(--text-muted);
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.sweep__tick-y {
+  text-anchor: end;
+}
+
+.sweep__tick-x,
+.sweep__axis-title {
+  text-anchor: middle;
+}
+
+.sweep__axis-title {
+  font-family: inherit;
+  font-size: 11px;
+}
+
+/* The operating point the sweep recommends. Dashed and behind the lines, so it reads as an
+   annotation on the curves rather than as a fourth series. */
+.sweep__best-rule {
+  stroke: var(--border-strong);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.sweep__best-dot {
+  fill: var(--series-total);
+  stroke: var(--surface);
+  stroke-width: 2;
+}
+
+.sweep__best-label {
+  fill: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  text-anchor: middle;
+}
+
+.sweep__table {
+  margin-top: 0.75rem;
+  font-size: 0.85rem;
+}
+
+.sweep__table summary {
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.row--best td {
+  background: var(--surface-sunken);
+  font-weight: 600;
+}
+
+/*
+ * A case adjudicated in the model_arithmetic run mode. Red, unlike an escalation: this is
+ * not the system referring a decision to a person, it is a determination produced by the
+ * arrangement the project exists to argue against, and a reviewer must not read it as the
+ * former. The heaviest treatment on the page, deliberately.
+ */
+.experiment {
+  color: var(--negative);
+  background: var(--negative-bg);
+  border: 1px solid var(--negative);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.85rem;
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+/* --- login ----------------------------------------------------------------------- */
+
+.login {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+
+.login__panel {
+  width: 100%;
+  max-width: 26rem;
+}

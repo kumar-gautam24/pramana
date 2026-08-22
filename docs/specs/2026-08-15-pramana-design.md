@@ -102,12 +102,23 @@ web ──/eval-runs──────► gateway ──► evals ──► adju
 
 ## 4. The adjudication pipeline
 
+> **Amended 2026-08-22 — stage 1 is struck. See
+> [ADR-0018](../decisions/0018-no-normalize-stage.md).** A prior-authorization request arrives
+> with its procedure and diagnosis codes already assigned by the submitter's billing system;
+> there is no free-text-to-code step in this domain. Deriving the code with a model would also
+> breach invariant 2 at the one point nothing downstream re-checks, and the deterministic half
+> of the stage ("validate codes: table lookup") has no licensable implementation for CPT
+> (ADR-0004). What free text is genuinely needed for is *retrieval* — a cross-encoder cannot
+> rank a bare-code query, measured — and that is `cases.request_text`. The stage is left in
+> the diagram below, struck, rather than deleted: the spec was approved, and this should read
+> as a decision rather than as an omission.
+
 ```
 POST /cases  →  202 + case_id                        (enqueued on Redis Streams)
       │
       ▼  worker
- 1. normalize        LLM, structured output  → CPT + ICD-10
-    validate codes   deterministic table lookup
+ 1. normalize        STRUCK — ADR-0018. A case arrives carrying requested_code and icd10;
+                     request_text carries the narrative the policy search ranks on.
  2. eligibility      member svc, SQL         → inactive?  ESCALATE not_eligible
  3. governing policy policy svc, effective-dated → none?  ESCALATE no_governing_policy
  4. decompose        LLM, citation-constrained → [C1..Cn], each citing its source chunk
@@ -197,7 +208,6 @@ replaying events; Postgres rows remain authoritative. See ADR-0005.
 ### SSE step audit
 
 ```
-event: step       {"step":"normalize","status":"ok","codes":["E0601","G47.33"]}
 event: step       {"step":"eligibility","status":"ok","source":"member/sql"}
 event: step       {"step":"policy","status":"ok","ncd":"240.4","effective":"2026-01-01"}
 event: step       {"step":"criteria","status":"ok","count":4}

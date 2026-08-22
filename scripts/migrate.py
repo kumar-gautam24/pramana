@@ -28,7 +28,7 @@ def _service_db_module():
     """Imported from whichever service's directory this is run in, so the script stays
     a thin entry point rather than a third copy of the runner."""
     failures = {}
-    for name in ("policy", "member"):
+    for name in ("policy", "member", "adjudication"):
         try:
             return importlib.import_module(f"{name}.db")
         except ModuleNotFoundError as error:
