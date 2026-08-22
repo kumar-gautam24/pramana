@@ -53,7 +53,23 @@ _JUDGMENT_TOOL = "judgment"
 
 
 def _decision_from(events: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for event in events:
+    """The case's final `decision` event, not its first.
+
+    `determinations_one_per_case` (adjudication migration 0006) means a case can hold only
+    one determination, so in a healthy system there is exactly one of these and first and
+    last agree. They did not before that migration, and the way they disagreed is why this
+    reads from the end: a case that reached the gate on one run and exhausted its retry
+    ladder on another emitted both decisions milliseconds apart, in an order nothing
+    controlled. Measured 2026-08-22 on case dc06c6d6 -- an `upstream_unavailable`
+    escalation at 12:22:05.345 and the real gate escalation at 12:22:05.670. Taking the
+    first scored the race rather than the adjudication, and scored it as
+    `insufficient_evidence`: an arm's whole run can come out `upstream_unavailable` that
+    way, which reads as agreement with its ablated twin and is nothing of the kind.
+
+    Reading from the end is the safer direction even with the constraint in place. A
+    duplicate that somehow reappears is then scored as the case's settled outcome rather
+    than as whatever transient failure happened to be recorded first."""
+    for event in reversed(events):
         if event.get("type") == "decision":
             return event.get("payload") or {}
     return None

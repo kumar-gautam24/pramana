@@ -23,11 +23,13 @@ import json
 from datetime import date
 
 import pytest
+from asyncpg.exceptions import UniqueViolationError
 from fixtures.ncd_240_4_extraction import HITS, RAW_RESPONSE
 from pramana_common.criteria import GateReason, Outcome
 from pramana_common.gate import GateThresholds
 
 from adjudication.repositories import cases as cases_repo
+from adjudication.repositories import determinations as determinations_repo
 from adjudication.services.member_client import Adherence, CoverageStatus, Note, SleepStudy
 from adjudication.services.pipeline import adjudicate
 from adjudication.services.upstream import UpstreamUnavailable
@@ -639,3 +641,33 @@ async def test_judgment_verdict_from_the_model_drives_the_outcome(db_pool):
     # the same chart -- see verify.verify_all. Pinning the number is what would catch a
     # regression back to per-criterion calls, which no assertion on behaviour alone can.
     assert llm.calls == 2
+
+
+async def test_a_case_may_hold_only_one_determination(db_pool):
+    """Migration 0006's constraint, pinned from the application side.
+
+    The re-entry guard in `adjudicate` is a check-then-act read, so it narrows the window
+    for a second determination without closing it -- two overlapping pipeline runs for one
+    case were observed doing exactly that on 2026-08-22, and the mechanism producing the
+    second run was never identified. This asserts the thing that holds regardless of the
+    mechanism: the database refuses the second row."""
+    case = await _insert_case(db_pool)
+    policy_client = StubPolicyClient(hits=HITS)
+    member_client = StubMemberClient(sleep_studies=[_study(ahi=20.0)])
+    llm = StubLLM(RAW_RESPONSE)
+
+    determination = await adjudicate(
+        case.id, db_pool, policy_client, member_client, llm, GateThresholds()
+    )
+
+    with pytest.raises(UniqueViolationError):
+        async with db_pool.acquire() as conn:
+            await determinations_repo.insert(
+                conn,
+                case_id=case.id,
+                outcome=determination.outcome,
+                reason=determination.reason,
+                blocking=[],
+                thresholds={},
+                winning_set=None,
+            )

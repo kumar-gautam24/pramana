@@ -118,6 +118,7 @@ import dataclasses
 import logging
 
 import asyncpg
+from asyncpg.exceptions import UniqueViolationError
 from pramana_common.criteria import CriterionResult, GateReason, Outcome
 from pramana_common.gate import GateThresholds
 
@@ -137,6 +138,35 @@ from adjudication.services.upstream import UpstreamUnavailable
 from adjudication.services.verify import Verification, verify_all
 
 logger = logging.getLogger(__name__)
+
+
+async def _already_determined(pool: asyncpg.Pool, case_id: str) -> Determination:
+    """What a pipeline run returns when it loses the race to write the determination.
+
+    `determinations_one_per_case` (migration 0006) makes "one case, one determination" a
+    database fact, so a second run's insert fails rather than adding a contradicting row.
+    The loser returns the determination that won: it is the case's answer either way, and
+    the caller asked what this case was decided to be, not which run got there first.
+
+    No `decision` event is appended on this path -- the winner appended one, and a second
+    would put the same case's outcome in the audit trail twice, which is the shape that
+    let `evals.runner._decision_from` score a race in the first place.
+
+    The determination is guaranteed present: the only way to get here is a unique violation
+    on `case_id`, which means a row for it exists and is committed. A missing one would
+    mean the constraint fired against nothing, so this raises rather than returning None --
+    an invariant this broken must not be smoothed over into a determination-shaped absence."""
+    determination = await determinations_repo.latest(pool, case_id)
+    if determination is None:
+        raise RuntimeError(
+            f"case {case_id!r} lost the determination race but no determination exists"
+        )
+    logger.info(
+        "case %s already determined by a concurrent run (%s); returning that determination",
+        case_id,
+        determination.outcome.value,
+    )
+    return determination
 
 #: Retrieval width for the policy search that opens the `policy` stage. Twice what
 #: NCD 240.4's worked example needs (chunks 56-59, four chunks -- see
@@ -167,21 +197,24 @@ async def _short_circuit(
     would leave a `decision` event for a determination that, if the transaction then
     failed, never actually got written."""
     blocking = [name]
-    async with pool.acquire() as conn, conn.transaction():
-        determination = await determinations_repo.insert(
-            conn,
-            case_id=case_id,
-            outcome=Outcome.ESCALATE,
-            reason=reason,
-            blocking=blocking,
-            thresholds=_thresholds_payload(thresholds),
-            winning_set=None,
-        )
-        # Every short-circuit still leaves the case `decided`, never `failed`:
-        # `failed` means the worker crashed (Task 8's concern), and a short-circuited
-        # case with no determination -- or one stuck in `running` -- is invisible to
-        # the reviewer queue, exactly the failure this system exists to prevent.
-        await cases_repo.update_status(conn, case_id, "decided")
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            determination = await determinations_repo.insert(
+                conn,
+                case_id=case_id,
+                outcome=Outcome.ESCALATE,
+                reason=reason,
+                blocking=blocking,
+                thresholds=_thresholds_payload(thresholds),
+                winning_set=None,
+            )
+            # Every short-circuit still leaves the case `decided`, never `failed`:
+            # `failed` means the worker crashed (Task 8's concern), and a short-circuited
+            # case with no determination -- or one stuck in `running` -- is invisible to
+            # the reviewer queue, exactly the failure this system exists to prevent.
+            await cases_repo.update_status(conn, case_id, "decided")
+    except UniqueViolationError:
+        return await _already_determined(pool, case_id)
     await case_events_repo.append(
         pool,
         case_id,
@@ -261,18 +294,25 @@ async def _persist_decision(
     with no determination naming the case decided. The `case_events` `decision` row is
     appended only after that transaction commits (finding 2, fix round 1) -- see
     `_short_circuit`'s docstring for why, which applies identically here."""
-    async with pool.acquire() as conn, conn.transaction():
-        await criterion_results_repo.insert_many(conn, verifications)
-        determination = await determinations_repo.insert(
-            conn,
-            case_id=case_id,
-            outcome=outcome,
-            reason=reason,
-            blocking=list(blocking),
-            thresholds=_thresholds_payload(thresholds),
-            winning_set=winning_set,
-        )
-        await cases_repo.update_status(conn, case_id, "decided")
+    try:
+        async with pool.acquire() as conn, conn.transaction():
+            await criterion_results_repo.insert_many(conn, verifications)
+            determination = await determinations_repo.insert(
+                conn,
+                case_id=case_id,
+                outcome=outcome,
+                reason=reason,
+                blocking=list(blocking),
+                thresholds=_thresholds_payload(thresholds),
+                winning_set=winning_set,
+            )
+            await cases_repo.update_status(conn, case_id, "decided")
+    except UniqueViolationError:
+        # The criterion results roll back with the determination, and that is the point:
+        # this run lost, so its results must not sit in the table beside the winner's
+        # determination, where nothing would distinguish them from the evidence that
+        # determination was actually reached on.
+        return await _already_determined(pool, case_id)
     await case_events_repo.append(
         pool,
         case_id,
