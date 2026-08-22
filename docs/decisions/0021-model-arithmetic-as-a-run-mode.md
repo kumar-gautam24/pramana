@@ -108,6 +108,23 @@ extraction and the judgment round. That cost is the finding rather than an overh
 optimise away, and the worker's retry ladder (ADR-0020) is what keeps a rate limit from
 turning it into an unmeasured case.
 
+**The comparison is an endpoint, not an exercise for the reader.**
+`GET /eval-runs/{id}/comparison?against={other}` puts two runs side by side and produces the
+signed delta — but only when they differ in their ablation and in nothing else. When they
+differ in more, both runs' own figures are still returned and the **delta is withheld rather
+than zeroed**, with the offending fields named: a delta is a claim about causation, and there
+is none to make across several simultaneous changes. This is the same discipline as the run
+mode itself, one level up, and it is where the discipline can actually be broken by accident
+— nothing else stops an operator reading the difference between a run on one model and a run
+on another as the cost of model arithmetic.
+
+Two smaller choices in that endpoint follow from the same argument. Every figure is computed
+over the **intersection** of the golden cases both runs decided, because a run that timed out
+on its two hardest cases would otherwise look cheaper than the run that finished them; the
+cases only one arm reached are listed rather than dropped. And orientation is read off each
+run's `ablation` rather than off which id is in the path, so the sign of the delta cannot
+depend on which way round a caller named the pair.
+
 The number this produces is not yet in the README, and must not be written there until a run
 has actually been executed. What exists today is the apparatus.
 

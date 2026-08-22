@@ -16,9 +16,9 @@ from typing import Any
 
 from pramana_common.criteria import Outcome
 
-from evals.domain import scoring
+from evals.domain import comparison, scoring
 from evals.models.golden_case import GoldenCase
-from evals.models.run import Ablation
+from evals.models.run import Ablation, EvalResult
 from evals.repositories import golden_cases as golden_repo
 from evals.repositories import runs as runs_repo
 from evals.services.adjudication_client import AdjudicationClient, AdjudicationUnavailable
@@ -245,15 +245,7 @@ async def report(pool, run_id: int, costs: scoring.CostModel) -> dict[str, Any] 
         results = await runs_repo.results_for_run(conn, run_id)
         cases = {case.id: case for case in await golden_repo.list_all(conn)}
 
-    outcomes = [
-        scoring.CaseOutcome(
-            expected=cases[result.golden_case_id].expected_outcome,
-            actual=result.outcome,
-            confidence=result.criterion_scores.get("weakest_confidence"),
-        )
-        for result in results
-        if result.golden_case_id in cases
-    ]
+    outcomes = list(_outcomes_by_case(results, cases).values())
 
     points, best = scoring.sweep(outcomes, costs)
     at_zero = scoring.score_at(outcomes, 0.0, costs)
@@ -268,17 +260,7 @@ async def report(pool, run_id: int, costs: scoring.CostModel) -> dict[str, Any] 
         return sum(score.get(key, 0.0) for score in extraction) / len(extraction)
 
     return {
-        "run": {
-            "id": run.id,
-            "model": run.model,
-            "prompt_version": run.prompt_version,
-            "git_sha": run.git_sha,
-            "ablation": run.ablation.value,
-            "status": run.status,
-            "thresholds": run.thresholds,
-            "started_at": run.started_at.isoformat(),
-            "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-        },
+        "run": run_summary(run),
         # The rates every money figure below is a multiple of, published with the figures
         # rather than left in this service's configuration. A cost is a count times a rate;
         # a reader who cannot see the rate cannot check the arithmetic, cannot tell a
@@ -294,14 +276,7 @@ async def report(pool, run_id: int, costs: scoring.CostModel) -> dict[str, Any] 
         # comparison step to move to the model, so even a `model_arithmetic` run reports
         # fewer ablated criteria than it has comparisons -- stated, not left to be
         # discovered (ADR-0021).
-        "ablation_coverage": {
-            "comparison_criteria": sum(
-                int(r.criterion_scores.get("comparison_criteria", 0) or 0) for r in results
-            ),
-            "by_model_arithmetic": sum(
-                int(r.criterion_scores.get("by_model_arithmetic", 0) or 0) for r in results
-            ),
-        },
+        "ablation_coverage": _coverage_of(results),
         "cases_scored": len(outcomes),
         "case_level": {
             "at_threshold_zero": _point_to_wire(at_zero),
@@ -319,6 +294,156 @@ async def report(pool, run_id: int, costs: scoring.CostModel) -> dict[str, Any] 
             for r in results
             if r.outcome is None
         ],
+    }
+
+
+def run_summary(run) -> dict[str, Any]:
+    """The conditions a run was made under, which is what makes its numbers reproducible --
+    and, in a comparison, what a reader checks before believing a delta. One function, so the
+    report and the comparison cannot describe the same run differently."""
+    return {
+        "id": run.id,
+        "model": run.model,
+        "prompt_version": run.prompt_version,
+        "git_sha": run.git_sha,
+        "ablation": run.ablation.value,
+        "status": run.status,
+        "thresholds": run.thresholds,
+        "started_at": run.started_at.isoformat(),
+        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
+    }
+
+
+def _coverage_of(results: list[EvalResult]) -> dict[str, int]:
+    """`ablation_coverage`, summed over whichever results are passed in -- a whole run for the
+    report, or the shared subset for a comparison, where a count over all of a run's cases
+    would not line up with the deltas beside it."""
+    return {
+        "comparison_criteria": sum(
+            int(r.criterion_scores.get("comparison_criteria", 0) or 0) for r in results
+        ),
+        "by_model_arithmetic": sum(
+            int(r.criterion_scores.get("by_model_arithmetic", 0) or 0) for r in results
+        ),
+    }
+
+
+def _outcomes_by_case(
+    results: list[EvalResult], cases: dict[int, GoldenCase]
+) -> dict[int, scoring.CaseOutcome]:
+    return {
+        result.golden_case_id: scoring.CaseOutcome(
+            expected=cases[result.golden_case_id].expected_outcome,
+            actual=result.outcome,
+            confidence=result.criterion_scores.get("weakest_confidence"),
+        )
+        for result in results
+        if result.golden_case_id in cases
+    }
+
+
+async def compare(
+    pool, run_id: int, against_id: int, costs: scoring.CostModel
+) -> dict[str, Any] | None:
+    """Two runs side by side, and — only if they are an ablation pair — the difference.
+
+    This is the endpoint the ablation exists for. Two report pages diffed by eye is not a
+    measurement; a signed delta with the conditions of both runs printed above it is.
+
+    Everything numeric is computed over the golden cases **both** runs decided, because a run
+    that timed out on its two hardest cases would otherwise look cheaper than the run that
+    finished them. Everything is scored at threshold zero, because that is the one operating
+    point both arms were actually run at — the per-run sweeps are still on each run's own page.
+
+    Returns `None` when either run does not exist, so the router can 404. It does not raise on
+    an incomparable pair: both runs' own figures are valid and are returned, and only `delta`
+    is withheld. See `domain/comparison.py` for why withholding it is the point rather than a
+    limitation.
+    """
+    async with pool.acquire() as conn:
+        first = await runs_repo.get_run(conn, run_id)
+        second = await runs_repo.get_run(conn, against_id)
+        if first is None or second is None:
+            return None
+        cases = {case.id: case for case in await golden_repo.list_all(conn)}
+        results = {
+            first.id: await runs_repo.results_for_run(conn, first.id),
+            second.id: await runs_repo.results_for_run(conn, second.id),
+        }
+
+    pairing = comparison.pair(first, second)
+    baseline_all = _outcomes_by_case(results[pairing.baseline.id], cases)
+    ablated_all = _outcomes_by_case(results[pairing.ablated.id], cases)
+    shared = sorted(set(baseline_all) & set(ablated_all))
+
+    baseline_point = scoring.score_at([baseline_all[i] for i in shared], 0.0, costs)
+    ablated_point = scoring.score_at([ablated_all[i] for i in shared], 0.0, costs)
+
+    def coverage(run_id_: int) -> dict[str, int]:
+        return _coverage_of([r for r in results[run_id_] if r.golden_case_id in shared])
+
+    return {
+        "baseline": run_summary(pairing.baseline),
+        "ablated": run_summary(pairing.ablated),
+        "comparable": pairing.comparable,
+        # Named fields rather than a boolean, so a reader is told what to fix. An empty list
+        # alongside `comparable: false` means the two are not an ablation pair at all.
+        "differs_in": list(pairing.differs_in),
+        "not_a_pair": pairing.not_a_pair,
+        "costs": {
+            "average_claim_amount": costs.average_claim_amount,
+            "review_minutes": costs.review_minutes,
+            "clinician_hourly_rate": costs.clinician_hourly_rate,
+            "review_cost": costs.review_cost,
+        },
+        "shared_cases": len(shared),
+        # Not silently dropped: a case only one arm reached is the most likely explanation
+        # for a delta that looks surprising.
+        "only_in_baseline": sorted(set(baseline_all) - set(ablated_all)),
+        "only_in_ablated": sorted(set(ablated_all) - set(baseline_all)),
+        "case_level": {
+            "baseline": _point_to_wire(baseline_point),
+            "ablated": _point_to_wire(ablated_point),
+            # Withheld, never zeroed, when the two runs differ in more than their ablation:
+            # a delta is a claim about causation, and there is none to make across three
+            # simultaneous changes.
+            "delta": (
+                _delta_to_wire(comparison.delta(baseline_point, ablated_point))
+                if pairing.comparable
+                else None
+            ),
+        },
+        "ablation_coverage": {
+            "baseline": coverage(pairing.baseline.id),
+            "ablated": coverage(pairing.ablated.id),
+        },
+        "disagreements": [
+            {
+                "golden_case_id": item.golden_case_id,
+                "expected": item.expected.value,
+                "baseline": None if item.baseline is None else item.baseline.value,
+                "ablated": None if item.ablated is None else item.ablated.value,
+            }
+            for item in comparison.disagreements(
+                {case_id: cases[case_id].expected_outcome for case_id in shared},
+                baseline_all,
+                ablated_all,
+            )
+        ],
+    }
+
+
+def _delta_to_wire(value: comparison.Delta) -> dict[str, Any]:
+    return {
+        "correct_approve": value.correct_approve,
+        "correct_escalate": value.correct_escalate,
+        "wrongly_approved": value.wrongly_approved,
+        "wrongly_escalated": value.wrongly_escalated,
+        "unfinished": value.unfinished,
+        "auto_approval_rate": value.auto_approval_rate,
+        "wrongly_approved_cost": value.wrongly_approved_cost,
+        "wrongly_escalated_cost": value.wrongly_escalated_cost,
+        "total_cost": value.total_cost,
     }
 
 

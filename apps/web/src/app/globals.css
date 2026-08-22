@@ -548,6 +548,26 @@ button.secondary {
   font-size: 0.875rem;
 }
 
+/* --- run comparison -------------------------------------------------------------- */
+
+/*
+ * A signed difference between a run and its ablated twin. Only cost deltas are coloured:
+ * "more expensive" is unambiguously worse, while more wrongful approvals and more wrongful
+ * escalations are both worse and worse in different currencies — colouring those the same
+ * would flatten the asymmetry the whole project is about.
+ */
+.delta {
+  font-weight: 600;
+}
+
+.delta--worse {
+  color: var(--negative);
+}
+
+.delta--better {
+  color: var(--approve);
+}
+
 /* --- threshold sweep -------------------------------------------------------------- */
 
 .sweep {

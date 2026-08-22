@@ -27,6 +27,7 @@ import type {
   QueuedCase,
   Review,
   ReviewSubmission,
+  RunComparison,
   Session,
   User,
 } from "@/lib/types";
@@ -175,6 +176,23 @@ export function startEvalRun(
   start: EvalRunStart,
 ): Promise<{ run_id: number; status: string }> {
   return request("/api/eval-runs", { method: "POST", token, body: start });
+}
+
+/**
+ * Two runs side by side. `against` is required by the route and has no default: picking a
+ * twin by heuristic is how a comparison ends up being made between runs that differ in three
+ * things, so naming both is what makes the pair a deliberate claim.
+ */
+export function compareEvalRuns(
+  token: string,
+  runId: number,
+  againstId: number,
+  signal?: AbortSignal,
+): Promise<RunComparison> {
+  return request<RunComparison>(
+    `/api/eval-runs/${runId}/comparison?against=${againstId}`,
+    { token, signal },
+  );
 }
 
 export function getEvalRun(

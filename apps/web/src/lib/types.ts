@@ -284,6 +284,59 @@ export interface EvalRunReport {
   unfinished: { golden_case_id: number; error: string | null }[];
 }
 
+/**
+ * Two runs side by side, and — only when they are an ablation pair — the difference between
+ * them. `GET /api/eval-runs/{id}/comparison?against={other}`.
+ *
+ * The shape encodes the discipline: `delta` is `null` rather than zeroed when the two runs
+ * differ in more than their ablation, because a delta is a claim about causation and there is
+ * none to make across several simultaneous changes (ADR-0021).
+ */
+export interface RunComparison {
+  baseline: EvalRun;
+  ablated: EvalRun;
+  comparable: boolean;
+  /** Fields other than `ablation` on which the two runs disagree. */
+  differs_in: string[];
+  /** Set when the two are not an ablation pair at all — both ablated, or neither. */
+  not_a_pair: string | null;
+  costs: EvalRunReport["costs"];
+  /** Golden cases both runs decided. Every figure below is over these and no others. */
+  shared_cases: number;
+  only_in_baseline: number[];
+  only_in_ablated: number[];
+  case_level: {
+    baseline: CasePoint;
+    ablated: CasePoint;
+    /** Withheld, never zeroed, when `comparable` is false. */
+    delta: RunDelta | null;
+  };
+  ablation_coverage: {
+    baseline: { comparison_criteria: number; by_model_arithmetic: number };
+    ablated: { comparison_criteria: number; by_model_arithmetic: number };
+  };
+  disagreements: {
+    golden_case_id: number;
+    expected: Outcome;
+    /** Null when that arm never reached a determination on the case. */
+    baseline: Outcome | null;
+    ablated: Outcome | null;
+  }[];
+}
+
+/** Ablated minus baseline. Signed: a negative total cost is the ablation winning. */
+export interface RunDelta {
+  correct_approve: number;
+  correct_escalate: number;
+  wrongly_approved: number;
+  wrongly_escalated: number;
+  unfinished: number;
+  auto_approval_rate: number;
+  wrongly_approved_cost: number;
+  wrongly_escalated_cost: number;
+  total_cost: number;
+}
+
 export interface ReviewSubmission {
   /** Narrowed on the way *out*: the console must not offer a value the CHECK would reject. */
   outcome: ReviewOutcome;

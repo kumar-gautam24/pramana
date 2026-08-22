@@ -234,6 +234,14 @@ job") was about who uses the screen, not about whether it exists.
 - [x] **A null extraction score renders as "not measured"**, never 0%; unfinished cases are
       shown as gaps in the measurement rather than as refusals; the golden set's size is
       rendered against its target of 60.
+- [x] **A run can be compared against its ablated twin from its own page**, through a picker
+      with nothing preselected: choosing a twin by heuristic is how a comparison ends up being
+      made between two runs that differ in three things. The conditions of both runs are
+      rendered *above* the delta, so a reader can check the pair before reading the result,
+      and an incomparable pair shows both sets of figures with the difference withheld.
+      Only cost deltas are coloured — more wrongful approvals and more wrongful escalations
+      are both worse, in different currencies, and colouring them alike would flatten the
+      asymmetry the project is about.
 - [x] **The chart palette is validated, not chosen.** Two categorical hues plus text ink for the
       total, checked over all pairs at both surfaces. The console's own green/amber/red is
       deliberately not reused: those carry outcome and verdict meaning, and red-against-amber is

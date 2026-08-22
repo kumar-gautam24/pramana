@@ -89,6 +89,11 @@ ROUTES: tuple[Route, ...] = (
     Route("POST", "/api/eval-runs", "evals", "operator", timeout=120, limit="eval_run"),
     Route("GET", "/api/eval-runs", "evals", "operator"),
     Route("GET", "/api/eval-runs/{run_id}", "evals", "operator"),
+    # A run beside its ablated twin, with the delta -- the comparison the ablation exists
+    # for. Declared after the run route above and matched independently of it: a path
+    # parameter never spans a `/`, so `/api/eval-runs/7/comparison` cannot resolve to the
+    # single-run handler.
+    Route("GET", "/api/eval-runs/{run_id}/comparison", "evals", "operator"),
     # --- policy ---------------------------------------------------------------------
     Route("POST", "/api/policies/search", "policy", "session", timeout=30),
 )

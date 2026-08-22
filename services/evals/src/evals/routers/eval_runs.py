@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from evals.config import get_settings
 from evals.domain.scoring import CostModel
-from evals.models.run import Ablation, EvalRun
+from evals.models.run import Ablation
 from evals.repositories import runs as runs_repo
 from evals.services import runner
 
@@ -31,20 +31,6 @@ class RunIn(BaseModel):
     #: provider; a capped run proves the harness end to end without that wait, and is
     #: recorded distinctly so it cannot be mistaken for a full one.
     limit: int | None = Field(default=None, ge=1)
-
-
-def _run_to_wire(run: EvalRun) -> dict:
-    return {
-        "id": run.id,
-        "model": run.model,
-        "prompt_version": run.prompt_version,
-        "git_sha": run.git_sha,
-        "ablation": run.ablation.value,
-        "status": run.status,
-        "thresholds": run.thresholds,
-        "started_at": run.started_at.isoformat(),
-        "finished_at": run.finished_at.isoformat() if run.finished_at else None,
-    }
 
 
 def _costs() -> CostModel:
@@ -103,7 +89,7 @@ async def start(body: RunIn, request: Request, background: BackgroundTasks) -> d
 async def list_runs(request: Request) -> list[dict]:
     async with request.app.state.pool.acquire() as conn:
         runs = await runs_repo.list_runs(conn)
-    return [_run_to_wire(run) for run in runs]
+    return [runner.run_summary(run) for run in runs]
 
 
 @router.get("/eval-runs/{run_id}")
@@ -114,3 +100,30 @@ async def get_run(run_id: int, request: Request) -> dict:
     if report is None:
         raise HTTPException(status_code=404, detail="no such run")
     return report
+
+
+@router.get("/eval-runs/{run_id}/comparison")
+async def compare_runs(run_id: int, against: int, request: Request) -> dict:
+    """This run beside another, and — only if the two are an ablation pair — the difference.
+
+    The endpoint the ablation exists for. Two report pages diffed by eye is not a measurement;
+    a signed delta with the conditions of both runs printed above it is (ADR-0021).
+
+    `against` is required and has no default. There is no "compare with the obvious other
+    one": picking a twin by heuristic is exactly how a comparison ends up being made between
+    runs that differ in three things, and the caller naming both is what makes the pair a
+    deliberate claim. Orientation is read off each run's `ablation`, not off which id is in
+    the path, so the answer does not depend on which way round they are named.
+
+    Answers 200 even for a pair that is not comparable: both runs' own figures are valid and
+    are returned, and only the delta is withheld. A 4xx would be the wrong shape — nothing
+    about the *request* was malformed, and the reason the delta is missing is a fact about the
+    two runs that the caller needs to read."""
+    if against == run_id:
+        raise HTTPException(
+            status_code=422, detail="a run cannot be compared against itself"
+        )
+    result = await runner.compare(request.app.state.pool, run_id, against, _costs())
+    if result is None:
+        raise HTTPException(status_code=404, detail="no such run")
+    return result
