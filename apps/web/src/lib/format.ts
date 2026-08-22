@@ -1,6 +1,6 @@
 /** Presentation helpers. Nothing here decides anything; it only chooses words. */
 
-import type { GateReason, Verdict } from "@/lib/types";
+import type { GateReason, ReviewOutcome, Verdict } from "@/lib/types";
 
 export function formatDate(iso: string): string {
   const value = new Date(iso);
@@ -68,6 +68,23 @@ const SHORT_CIRCUIT_LABELS: Record<string, string> = {
 
 export function shortCircuitLabel(marker: string): string | null {
   return SHORT_CIRCUIT_LABELS[marker] ?? null;
+}
+
+/**
+ * A clinician's recorded determination, in words. The vocabulary is closed
+ * (`reviews_outcome_check`, ADR-0019), so an unrecognised value means the schema moved and
+ * this map did not -- shown verbatim rather than given a sentence nobody wrote, the same rule
+ * `OutcomeBadge` follows and for the same reason: this column records who issued an adverse
+ * determination, and mislabelling one is a legal problem rather than a cosmetic one.
+ */
+const REVIEW_OUTCOME_LABELS: Record<ReviewOutcome, string> = {
+  approve: "Approved",
+  deny: "Denied",
+  pend: "Pended for more information",
+};
+
+export function reviewOutcomeLabel(outcome: string): string {
+  return REVIEW_OUTCOME_LABELS[outcome as ReviewOutcome] ?? outcome;
 }
 
 const STAGE_LABELS: Record<string, string> = {

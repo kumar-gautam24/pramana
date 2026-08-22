@@ -3,8 +3,8 @@
 This is the one table in this service whose `outcome` is not constrained to
 approve/escalate, and that is the entire reason it is a separate table from
 `determinations`: a licensed clinician *may* issue an adverse determination, and the
-machine may not (ADR-0002). The column is still open pending the vocabulary plan 07
-settles -- recorded as deliberate, not forgotten."""
+machine may not (ADR-0002). It is constrained -- to approve/deny/pend, ADR-0019 and
+`reviews_outcome_check` -- just to a different closed set, not to a wider one."""
 
 import asyncpg
 

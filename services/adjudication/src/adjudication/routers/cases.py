@@ -75,20 +75,33 @@ async def get_case(case_id: str, request: Request) -> dict:
     return _case_to_wire(case)
 
 
+#: The closed vocabulary a clinician may record, settled in ADR-0019 and enforced by
+#: `reviews_outcome_check` (migrations/0004_reviews_outcome_vocabulary.sql). Three values,
+#: not the machine's two: `deny` is the adverse determination the system itself may never
+#: issue (ADR-0002), and `pend` is the disposition of a clinician who cannot decide from the
+#: record -- without it such a clinician either records nothing, and the case leaves the
+#: flywheel with no `agreed_with_system` row at all, or records a decision they did not
+#: reach. Partial approval is deliberately absent: a case carries one code, one date and no
+#: units, so there is nothing here for a partial to be partial of, and a partial is legally
+#: adverse as to the portion refused -- recorded as a fourth flat value it would make "was an
+#: adverse determination issued" unanswerable from this column. ADR-0019 states the condition
+#: under which that reopens.
+ReviewOutcome = Literal["approve", "deny", "pend"]
+
+
 class ReviewIn(BaseModel):
     """A clinician's own decision on an escalated case.
 
-    `outcome` is deliberately unconstrained here, unlike a determination's: a licensed
-    clinician may issue an adverse decision and the machine may not (ADR-0002), which is
-    the whole reason `reviews` is a separate table. The closed vocabulary a reviewer may
-    record is a regulatory question plan 07 settles; until then this accepts what the
-    clinician types rather than guessing a set no code has ever produced.
+    `outcome` is a closed set here and a *different* closed set from a determination's, which
+    is the point rather than an inconsistency: the machine has two outcomes and a clinician
+    has three, and the third is the denial the machine may never issue. See `ReviewOutcome`
+    above and ADR-0019 -- this was plan 04's one deliberately-open column and it is now shut.
 
     `agreed_with_system` is the flywheel: one boolean that turns clinical work into eval
     data. Required, not defaulted -- a default would silently record agreement nobody
     expressed."""
 
-    outcome: str = Field(min_length=1)
+    outcome: ReviewOutcome
     rationale: str = Field(min_length=1)
     agreed_with_system: bool
 

@@ -1,4 +1,4 @@
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, reviewOutcomeLabel } from "@/lib/format";
 import type { Review } from "@/lib/types";
 
 /**
@@ -19,7 +19,7 @@ export function ReviewHistory({ reviews }: { reviews: Review[] }) {
       {reviews.map((review) => (
         <article key={review.id} className="evidence stack stack--tight">
           <div className="row small">
-            <strong>{review.outcome}</strong>
+            <strong>{reviewOutcomeLabel(review.outcome)}</strong>
             <span className="muted mono">{review.clinician_id.slice(0, 8)}</span>
             <span className="muted">{formatDateTime(review.created_at)}</span>
             <div className="shell__spacer" />

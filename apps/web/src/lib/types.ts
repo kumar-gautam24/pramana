@@ -123,17 +123,33 @@ export interface CaseEvent {
   created_at: string;
 }
 
+/**
+ * What a clinician may record, mirroring `reviews_outcome_check`
+ * (adjudication/migrations/0004_reviews_outcome_vocabulary.sql) and
+ * `routers/cases.py::ReviewOutcome`. Three values, and a different three from `Outcome`
+ * above: the machine has two outcomes and a clinician has three, the third being the denial
+ * the machine may never issue (ADR-0002, ADR-0019).
+ */
+export type ReviewOutcome = "approve" | "deny" | "pend";
+
 export interface Review {
   id: number;
-  clinician_id: string;
+  /**
+   * Typed `string`, not `ReviewOutcome`, for the same reason `Determination.outcome` is:
+   * this is a value read back from the database, and narrowing at the boundary would let an
+   * unrecognised one be coerced into a plausible label. `reviewOutcomeLabel` tests
+   * membership and shows anything else verbatim.
+   */
   outcome: string;
+  clinician_id: string;
   rationale: string;
   agreed_with_system: boolean;
   created_at: string;
 }
 
 export interface ReviewSubmission {
-  outcome: string;
+  /** Narrowed on the way *out*: the console must not offer a value the CHECK would reject. */
+  outcome: ReviewOutcome;
   rationale: string;
   agreed_with_system: boolean;
 }

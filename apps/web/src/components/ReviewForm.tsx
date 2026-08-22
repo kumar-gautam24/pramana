@@ -22,24 +22,33 @@ import { useState } from "react";
 import { useSession } from "@/components/SessionProvider";
 import * as api from "@/lib/api";
 import { GatewayError } from "@/lib/gateway";
+import type { ReviewOutcome } from "@/lib/types";
 
 /**
- * The console's proposed vocabulary. `reviews.outcome` is deliberately unconstrained in
- * the database: what a clinician may record is a regulatory question that plan 07
- * settles, and the schema does not guess at a set no code has ever produced. Until then
- * the constraint lives here, at the one place a review is authored, so the column fills
- * with a known vocabulary rather than free text that would have to be reconciled later.
+ * The vocabulary, settled in [ADR-0019] and enforced in three places that must agree:
+ * `reviews_outcome_check` in adjudication/migrations/0004_reviews_outcome_vocabulary.sql,
+ * `routers/cases.py::ReviewOutcome`, and this list. The `Record<ReviewOutcome, string>`
+ * annotation is what makes the third copy checkable rather than hopeful -- adding a value to
+ * `ReviewOutcome` without a label here, or a label for a value the type does not have, fails
+ * `tsc`.
+ *
+ * Three values, not the machine's two: `deny` is the adverse determination a licensed
+ * clinician may issue and the system may not (ADR-0002), which is the whole reason `reviews`
+ * is a separate table. Partial approval is deliberately absent -- a case carries one code,
+ * one date and no units, so there is nothing for a partial to be partial of.
  */
-const OUTCOMES = [
-  { value: "approve", label: "Approve — the record supports the request" },
-  { value: "deny", label: "Deny — the record does not support the request" },
-  { value: "more_information", label: "Pend — request more information" },
-] as const;
+const OUTCOME_LABELS: Record<ReviewOutcome, string> = {
+  approve: "Approve — the record supports the request",
+  deny: "Deny — the record does not support the request",
+  pend: "Pend — the record does not say enough; request more information",
+};
+
+const OUTCOMES = Object.keys(OUTCOME_LABELS) as ReviewOutcome[];
 
 export function ReviewForm({ caseId, onRecorded }: { caseId: string; onRecorded: () => void }) {
   const { session } = useSession();
 
-  const [outcome, setOutcome] = useState<string>(OUTCOMES[0].value);
+  const [outcome, setOutcome] = useState<ReviewOutcome>("approve");
   const [rationale, setRationale] = useState("");
   const [agreed, setAgreed] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -59,8 +68,12 @@ export function ReviewForm({ caseId, onRecorded }: { caseId: string; onRecorded:
         rationale: rationale.trim(),
         agreed_with_system: agreed,
       });
+      // The whole form resets, the decision included. A case can be reviewed more than
+      // once, and leaving `deny` selected after a recorded denial makes the next submission
+      // one mis-click away from a second one.
       setRationale("");
       setAgreed(null);
+      setOutcome("approve");
       onRecorded();
     } catch (cause) {
       setError(
@@ -84,11 +97,11 @@ export function ReviewForm({ caseId, onRecorded }: { caseId: string; onRecorded:
         <select
           id="review-outcome"
           value={outcome}
-          onChange={(event) => setOutcome(event.target.value)}
+          onChange={(event) => setOutcome(event.target.value as ReviewOutcome)}
         >
-          {OUTCOMES.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
+          {OUTCOMES.map((value) => (
+            <option key={value} value={value}>
+              {OUTCOME_LABELS[value]}
             </option>
           ))}
         </select>

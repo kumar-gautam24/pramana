@@ -15,6 +15,11 @@ class Review:
     #: auth's own primary key, recorded as a value -- no foreign key crosses a
     #: service boundary.
     clinician_id: str
+    #: One of approve/deny/pend -- ADR-0019, enforced by `reviews_outcome_check`. Typed
+    #: `str` rather than a Literal because this is the row as read back, and a value the
+    #: database holds is a fact about the record whatever this process believes the
+    #: vocabulary to be; `routers/cases.py::ReviewOutcome` is where the set is enforced on
+    #: the way in.
     outcome: str
     rationale: str
     #: Whether the clinician's outcome matches what the system would have produced --
