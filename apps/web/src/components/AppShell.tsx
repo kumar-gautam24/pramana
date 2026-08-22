@@ -10,6 +10,7 @@
  * request whatever this component renders.
  */
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
@@ -33,9 +34,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="shell">
       <header className="shell__header">
-        <a href="/cases" className="shell__brand">
+        <Link href="/cases" className="shell__brand">
           Pramana<span>reviewer console</span>
-        </a>
+        </Link>
         <div className="shell__spacer" />
         <span className="shell__identity">
           {session.user.email} &middot; {session.user.role}
