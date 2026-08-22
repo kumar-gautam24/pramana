@@ -22,8 +22,9 @@ from adjudication.services.member_client import (
     SleepStudy,
 )
 from adjudication.services.upstream import UpstreamUnavailable
-from adjudication.services.verify import deterministic as deterministic_module
+from adjudication.services.verify import arithmetic as arithmetic_module
 from adjudication.services.verify import verify
+from adjudication.services.verify.arithmetic import PythonArithmetic
 from adjudication.services.verify.deterministic import verify as verify_deterministic
 from adjudication.services.verify.judgment import verify as verify_judgment
 
@@ -164,7 +165,7 @@ async def test_threshold_ge_met_at_exact_boundary():
     criterion = _criterion(CriterionType.THRESHOLD, {"fact": "ahi", "operator": ">=", "value": 15})
     client = StubMemberClient(sleep_studies=[_study(ahi=15.0)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
 
@@ -175,7 +176,7 @@ async def test_threshold_gt_not_met_at_exact_boundary():
     criterion = _criterion(CriterionType.THRESHOLD, {"fact": "ahi", "operator": ">", "value": 15})
     client = StubMemberClient(sleep_studies=[_study(ahi=15.0)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.NOT_MET
 
@@ -184,7 +185,7 @@ async def test_threshold_gt_met_just_above_boundary():
     criterion = _criterion(CriterionType.THRESHOLD, {"fact": "ahi", "operator": ">", "value": 15})
     client = StubMemberClient(sleep_studies=[_study(ahi=15.1)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
 
@@ -195,7 +196,7 @@ async def test_threshold_le_met_at_exact_boundary():
     )
     client = StubMemberClient(sleep_studies=[_study(channels=3)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
 
@@ -206,7 +207,7 @@ async def test_threshold_lt_not_met_at_exact_boundary():
     )
     client = StubMemberClient(sleep_studies=[_study(channels=3)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.NOT_MET
 
@@ -217,7 +218,7 @@ async def test_threshold_eq_met_when_equal():
     )
     client = StubMemberClient(sleep_studies=[_study(apnea_events=30)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
 
@@ -228,7 +229,7 @@ async def test_threshold_eq_not_met_when_unequal():
     )
     client = StubMemberClient(sleep_studies=[_study(apnea_events=31)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.NOT_MET
 
@@ -244,7 +245,7 @@ async def test_threshold_met_by_any_study_regardless_of_recency():
     newer_failing = _study(study_id=2, days_before=10, ahi=5.0)
     client = StubMemberClient(sleep_studies=[older_passing, newer_failing])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
     assert result.evidence["matched_study"]["study_id"] == 1
@@ -256,7 +257,7 @@ async def test_threshold_not_met_when_no_study_qualifies():
     criterion = _criterion(CriterionType.THRESHOLD, {"fact": "ahi", "operator": ">=", "value": 15})
     client = StubMemberClient(sleep_studies=[_study(ahi=5.0), _study(study_id=2, ahi=8.0)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.NOT_MET
     assert result.evidence["matched_study"] is None
@@ -268,7 +269,7 @@ async def test_threshold_insufficient_evidence_when_no_sleep_studies():
     criterion = _criterion(CriterionType.THRESHOLD, {"fact": "ahi", "operator": ">=", "value": 15})
     client = StubMemberClient(sleep_studies=[])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.INSUFFICIENT_EVIDENCE
 
@@ -280,7 +281,7 @@ async def test_threshold_confidence_is_exactly_one_not_merely_high():
     criterion = _criterion(CriterionType.THRESHOLD, {"fact": "ahi", "operator": ">=", "value": 15})
     client = StubMemberClient(sleep_studies=[_study(ahi=20.0)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.confidence == 1.0
     assert not (result.result.confidence >= 0.9 and result.result.confidence != 1.0)
@@ -299,7 +300,7 @@ async def test_adherence_fraction_ge_met_at_boundary():
     )
     client = StubMemberClient(adherence=Adherence(nights=30, qualifying_nights=21, fraction=0.7))
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
     # The window this module computed is itself part of the evidence a reviewer needs.
@@ -321,7 +322,7 @@ async def test_adherence_fraction_not_met_below_boundary():
         adherence=Adherence(nights=30, qualifying_nights=20, fraction=20 / 30)
     )
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.NOT_MET
 
@@ -336,7 +337,7 @@ async def test_adherence_nights_uses_qualifying_nights_not_total_nights():
     )
     client = StubMemberClient(adherence=Adherence(nights=30, qualifying_nights=21, fraction=0.7))
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
     assert result.evidence["observed"] == 21
@@ -354,7 +355,7 @@ async def test_adherence_insufficient_evidence_when_zero_nights_observed():
     )
     client = StubMemberClient(adherence=Adherence(nights=0, qualifying_nights=0, fraction=0.0))
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.INSUFFICIENT_EVIDENCE
 
@@ -372,7 +373,7 @@ async def test_enum_condition_codes_met_when_present():
         ]
     )
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
 
@@ -385,7 +386,7 @@ async def test_enum_condition_codes_not_met_when_list_empty():
     )
     client = StubMemberClient(conditions=[])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.NOT_MET
     assert result.result.verdict is not Verdict.INSUFFICIENT_EVIDENCE
@@ -397,7 +398,7 @@ async def test_enum_condition_codes_forwards_allowed_as_the_codes_argument():
     )
     client = StubMemberClient(conditions=[])
 
-    await verify_deterministic(criterion, CASE, client)
+    await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert client.calls[0] == ("conditions", MEMBER_ID, DATE_OF_SERVICE, ["a", "b"])
 
@@ -409,7 +410,7 @@ async def test_enum_coverage_active_met_when_active_and_allowed():
     criterion = _criterion(CriterionType.ENUM, {"fact": "coverage_active", "allowed": ["active"]})
     client = StubMemberClient(coverage=CoverageStatus.ACTIVE)
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
 
@@ -420,7 +421,7 @@ async def test_enum_coverage_active_not_met_when_inactive():
     criterion = _criterion(CriterionType.ENUM, {"fact": "coverage_active", "allowed": ["active"]})
     client = StubMemberClient(coverage=CoverageStatus.INACTIVE)
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.NOT_MET
 
@@ -430,7 +431,7 @@ async def test_enum_coverage_active_insufficient_evidence_when_no_record():
     criterion = _criterion(CriterionType.ENUM, {"fact": "coverage_active", "allowed": ["active"]})
     client = StubMemberClient(coverage=CoverageStatus.NO_RECORD)
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.INSUFFICIENT_EVIDENCE
 
@@ -447,7 +448,7 @@ async def test_enum_test_type_met_by_any_study():
                        _study(study_id=2, test_type="home_type_iii")]
     )
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
     assert result.evidence["matched_study"]["study_id"] == 2
@@ -457,7 +458,7 @@ async def test_enum_test_type_not_met_when_no_study_matches():
     criterion = _criterion(CriterionType.ENUM, {"fact": "test_type", "allowed": ["home_type_i"]})
     client = StubMemberClient(sleep_studies=[_study(test_type="home_type_iv")])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.NOT_MET
 
@@ -466,7 +467,7 @@ async def test_enum_test_type_insufficient_evidence_when_no_studies():
     criterion = _criterion(CriterionType.ENUM, {"fact": "test_type", "allowed": ["home_type_i"]})
     client = StubMemberClient(sleep_studies=[])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.INSUFFICIENT_EVIDENCE
 
@@ -492,12 +493,14 @@ def test_no_enum_permitted_fact_has_a_numeric_datatype_yet():
 
 
 def test_comparator_table_covers_every_threshold_operator():
-    """Pins `deterministic._COMPARATORS` against `domain.params.THRESHOLD_OPERATORS`,
-    the same closed set `validate_params` already checks a criterion's `operator`
-    against. A sixth operator added to one without the other would otherwise fail
-    silently -- either with a `KeyError` at verify time, or with an operator this
-    module could never be asked to compare."""
-    assert set(deterministic_module._COMPARATORS) == THRESHOLD_OPERATORS
+    """Pins `arithmetic._COMPARATORS` against `domain.params.THRESHOLD_OPERATORS`, the
+    same closed set `validate_params` already checks a criterion's `operator` against. A
+    sixth operator added to one without the other would otherwise fail silently -- either
+    with a `KeyError` at verify time, or with an operator nothing could ever be asked to
+    compare. The table moved from `deterministic` to `arithmetic` in 49a2414, where it
+    backs `PythonArithmetic`; this test followed it rather than being deleted, because it
+    is the only thing holding the two closed sets together."""
+    assert set(arithmetic_module._COMPARATORS) == THRESHOLD_OPERATORS
 
 
 # === temporal: window boundary, both directions =========================================
@@ -510,7 +513,7 @@ async def test_temporal_within_days_before_met_at_exact_window_boundary():
     )
     client = StubMemberClient(sleep_studies=[_study(days_before=365)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
 
@@ -524,7 +527,7 @@ async def test_temporal_within_days_before_not_met_one_day_past_window():
     )
     client = StubMemberClient(sleep_studies=[_study(days_before=366)])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.NOT_MET
 
@@ -536,7 +539,7 @@ async def test_temporal_insufficient_evidence_when_no_studies():
     )
     client = StubMemberClient(sleep_studies=[])
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.INSUFFICIENT_EVIDENCE
 
@@ -550,7 +553,7 @@ async def test_temporal_met_by_any_qualifying_study():
         sleep_studies=[_study(study_id=1, days_before=400), _study(study_id=2, days_before=10)]
     )
 
-    result = await verify_deterministic(criterion, CASE, client)
+    result = await verify_deterministic(criterion, CASE, client, PythonArithmetic())
 
     assert result.result.verdict is Verdict.MET
     assert result.evidence["matched_study"]["study_id"] == 2
