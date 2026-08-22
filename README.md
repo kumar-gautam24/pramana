@@ -8,16 +8,26 @@ approves what it can prove, and it cannot deny anything.**
 
 ---
 
-**Status: in development.** The design is complete and approved
-([`docs/specs`](docs/specs/2026-08-15-pramana-design.md)). Two of the seven services are
-built — `policy` (CMS corpus ingest, chunking, pgvector retrieval) and `member` (Synthea-derived
-population, clinical record repositories) — along with the shared `packages/common`, the
-migration runner, and 229 tests. `adjudication`, `evals`, `gateway`, `auth` and the reviewer
-console are specified but not yet implemented.
+**Status: it runs end to end, on real inputs, and the numbers it has earned are small.**
 
-This README describes what is being built, and will be replaced with measured results as they
-exist. No number appears here until a script produces it — which is why the accuracy and cost
-figures this project exists to report are absent rather than estimated.
+All seven components of the design exist:
+
+| component | what is built |
+| --- | --- |
+| `policy` | CMS corpus ingest, chunking, pgvector retrieval, cross-encoder reranking, effective-dating |
+| `member` | Synthea-derived population, eligibility, sleep studies, adherence, conditions, narrative notes |
+| `adjudication` | the pipeline, its worker, criteria extraction, the four verifiers, the gate, the append-only event log, SSE |
+| `auth` | accounts, argon2id passwords, sessions, roles |
+| `gateway` | the single front door: route table, session resolution, role gating, rate limits, circuit breaker |
+| `evals` | golden cases, eval runs, two-level scoring, ablations |
+| `apps/web` | the reviewer console: queue, case detail, live step view, review submission |
+
+plus `packages/common` (the shared vocabulary and the gate) and the migration runner.
+
+A case submitted through the gateway is adjudicated against the real text of CMS NCD 240.4 by
+a real model and decided with a complete audit trail. That has been run. What it produced —
+including the one thing that currently stops any case approving — is under
+[What is measured](#what-is-measured-and-what-is-not), and nothing there is estimated.
 
 ## The problem
 
@@ -62,7 +72,7 @@ A coverage policy is not a passage — it is a checklist. So the pipeline decomp
 verifies rather than retrieving and answering:
 
 ```
-normalize ─► eligibility ─► governing policy ─► decompose into criteria
+eligibility ─► governing policy ─► decompose into criteria
                                                         │
                           ┌─────────────────────────────┴──────────────────┐
                           │  verify each criterion, in parallel            │
@@ -75,6 +85,11 @@ normalize ─► eligibility ─► governing policy ─► decompose into crite
                               any insufficient ────────► ESCALATE
 ```
 
+The design numbers a `normalize` stage first, turning free text into a CPT code and an
+ICD-10 code. It is **not built**: a case arrives carrying its codes, and its submitted
+narrative is what the policy search runs on. Whoever builds intake either adds that stage or
+strikes it from the spec.
+
 **The model decides what the rules are. Deterministic code checks the facts they point at.**
 It extracts criteria from policy prose it has never seen, classifies each by type, and emits
 parameters — then SQL performs the comparison. Nothing is hardcoded per policy, and no date
@@ -85,7 +100,9 @@ Refusal is explainable per criterion, not per query:
 > Escalated — criterion 2 (documented moderate or severe OSA) has insufficient evidence in the
 > record. Criteria 1, 3, 4 met.
 
-## What is measured
+## What is measured, and what is not
+
+### How it is scored
 
 Two levels. At the criterion level: extraction precision and recall against a human-authored
 list, verdict accuracy, citation correctness. At the case level, the numbers that carry
@@ -102,12 +119,86 @@ correctness. At least 8 of the cases are *near-miss* — in-domain and partially
 because a refusal set made only of obviously out-of-scope requests measures the easy half of
 the problem.
 
+### Measured
+
+One eval run has been scored, over **three golden cases**:
+
+| | |
+| --- | --- |
+| wrongly auto-approved | **$0** |
+| wrongly escalated | **$72** of clinician time |
+
+That is the entire cost result this project has. Three cases is not a sample; it is a
+demonstration that the number exists and has units.
+
+Three qualitative results, each from a live run against the real corpus, real member records
+and a real model:
+
+- **Criteria extraction works on policy it has never seen.** Given NCD 240.4's retrieved text,
+  the model returned the rule in disjunctive normal form — one set requiring AHI ≥ 15 with a
+  valid study type, another requiring AHI 5–14 *with* documented symptoms — which is what the
+  policy actually says. Every criterion passed parameter validation; every citation resolved to
+  a chunk that had genuinely been retrieved. This is [ADR-0011](docs/decisions/0011-alternative-criteria-sets.md)
+  on real input rather than on a fixture.
+- **The near-miss case behaves.** A member with AHI 14.446 fails `>= 15` in the first set and
+  fails `<= 14` in the second. The system escalated with `criterion_not_met` and named the AHI
+  criterion. Both comparisons were done in Python, not by the model — the whole argument of
+  [ADR-0003](docs/decisions/0003-ai-extracts-rules-code-checks-facts.md), end to end on real data.
+- **Retrieval needs the narrative, not the codes.** For NCD 240.4, the criteria-bearing chunks
+  are 57, 58, 59, 69 and 70. A query built from a case's codes alone (`E0601 G47.33`) returned
+  exactly one of them and filled the rest with boilerplate, its reranker scores flat in a band
+  around −11 — a cross-encoder saying *nothing here matches*. A natural-language query returned
+  57, 58, 59 and 70, with scores spread from 7.2 down. Codes are out of distribution for a model
+  trained on question/passage pairs. A case now carries its submitted narrative and falls back
+  to its codes.
+
+### Not measured
+
+- **Auto-approval rate.** No case has approved end to end yet, and the reason is data, not
+  logic — see below.
+- **Extraction precision and recall** against a human-authored criteria list. The extraction
+  above was read and judged correct by a person; it was not scored.
+- **Verdict accuracy and citation correctness** per criterion.
+- **The threshold sweep**, and therefore the chosen operating point.
+- **The signature ablation** — the run that has the model do the arithmetic instead of SQL, to
+  prove invariant 2 empirically. It returns 501 deliberately: adjudication has no such run mode
+  yet, and a fabricated number would defeat the point of the experiment.
+- **The golden set is three cases** against a design target of sixty, of which at least twenty
+  must escalate and at least eight be near-miss ([ADR-0009](docs/decisions/0009-near-miss-cases-required.md)).
+
+### Known open
+
+- **No case can currently approve, and the code is not why.** The model correctly extracts NCD
+  240.4's *procedural* requirements alongside its clinical ones — that the study was ordered by
+  the treating physician, that the supplier educated the beneficiary. Those are genuinely in the
+  policy, and the generated member charts do not document them, so those criteria return
+  `insufficient_evidence` and the gate correctly refuses to approve. The generator now writes a
+  referring physician's order into the record; the seeded population has not been regenerated
+  against it.
+- **A rate limit can still land on a clinician's queue.** A 429 from the model provider becomes
+  `UpstreamUnavailable`, which becomes an escalation — a fact about our infrastructure arriving
+  as though it were a fact about the member. Batching a case's judgment criteria into one call
+  ([ADR-0015](docs/decisions/0015-batched-judgment-verification.md)) took a case from about
+  seven model calls to two and made this rare rather than routine; the durable fix is a worker
+  that retries with backoff and records each attempt in the event log, so the audit claim stays
+  honest.
+- **What a clinician may record as their own outcome is not yet a closed vocabulary.**
+  `reviews.outcome` is deliberately unconstrained in the database until the regulatory question
+  is settled; the console constrains it at the point of authoring.
+
 ## Architecture
 
 Seven services: `gateway` (8000, no database), `policy` (8001), `adjudication` (8002),
 `evals` (8003), `auth` (8004), `member` (8005), and a Next.js reviewer console (3000).
-Database per service, Postgres with pgvector, Redis. Python 3.12, FastAPI, local models via
-Ollama.
+Database per service, Postgres with pgvector, Redis. Python 3.12, FastAPI, raw SQL over
+asyncpg — in a system an insurance commissioner may audit, "show me the query that decided
+this" needs a literal answer ([ADR-0013](docs/decisions/0013-raw-sql-not-orm.md)).
+
+The model is a configuration choice: Ollama locally, or any hosted provider that will carry
+the extraction schema **unmodified** ([ADR-0014](docs/decisions/0014-one-schema-three-providers.md)).
+The console holds the gateway's address and no other backend address, so there is no second
+door for a browser to find
+([ADR-0017](docs/decisions/0017-gateway-establishes-identity.md)).
 
 Each pipeline stage appends to an append-only `case_events` log and publishes to Redis, so
 the audit trail regulators inspect and the live step view reviewers watch are the same data.
