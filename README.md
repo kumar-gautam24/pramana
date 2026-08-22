@@ -19,8 +19,8 @@ All seven components of the design exist:
 | `adjudication` | the pipeline, its worker, criteria extraction, the four verifiers, the gate, the append-only event log, SSE |
 | `auth` | accounts, argon2id passwords, sessions, roles |
 | `gateway` | the single front door: route table, session resolution, role gating, rate limits, circuit breaker |
-| `evals` | golden cases, eval runs, two-level scoring, ablations |
-| `apps/web` | the reviewer console: queue, case detail, live step view, review submission |
+| `evals` | golden cases, eval runs, two-level scoring, the model-arithmetic ablation |
+| `apps/web` | the console: intake, queue, case detail, live step view, review submission, the eval harness |
 
 plus `packages/common` (the shared vocabulary and the gate) and the migration runner.
 
@@ -165,8 +165,11 @@ and a real model:
 - **Verdict accuracy and citation correctness** per criterion.
 - **The threshold sweep**, and therefore the chosen operating point.
 - **The signature ablation** — the run that has the model do the arithmetic instead of SQL, to
-  prove invariant 2 empirically. It returns 501 deliberately: adjudication has no such run mode
-  yet, and a fabricated number would defeat the point of the experiment.
+  prove invariant 2 empirically. It is **built and not yet run**
+  ([ADR-0021](docs/decisions/0021-model-arithmetic-as-a-run-mode.md)): `cases.run_mode` selects
+  who performs the comparisons, the difference between the two arms lives in one module, and
+  `POST /eval-runs` no longer answers 501. No run has been executed, so there is no error rate
+  here and there must not be one until there is.
 - **The golden set is three cases** against a design target of sixty, of which at least twenty
   must escalate and at least eight be near-miss ([ADR-0009](docs/decisions/0009-near-miss-cases-required.md)).
 
@@ -179,16 +182,16 @@ and a real model:
   `insufficient_evidence` and the gate correctly refuses to approve. The generator now writes a
   referring physician's order into the record; the seeded population has not been regenerated
   against it.
-- **A rate limit can still land on a clinician's queue.** A 429 from the model provider becomes
-  `UpstreamUnavailable`, which becomes an escalation — a fact about our infrastructure arriving
-  as though it were a fact about the member. Batching a case's judgment criteria into one call
-  ([ADR-0015](docs/decisions/0015-batched-judgment-verification.md)) took a case from about
-  seven model calls to two and made this rare rather than routine; the durable fix is a worker
-  that retries with backoff and records each attempt in the event log, so the audit claim stays
-  honest.
-- **What a clinician may record as their own outcome is not yet a closed vocabulary.**
-  `reviews.outcome` is deliberately unconstrained in the database until the regulatory question
-  is settled; the console constrains it at the point of authoring.
+- **The eval harness has never been pointed at a golden set worth the name.** Three cases,
+  against a target of sixty. Every number the harness can produce is therefore a demonstration
+  that the measurement exists rather than a measurement. Labels are human-authored by rule
+  ([ADR-0008](docs/decisions/0008-human-authored-golden-labels.md)), so this is human work and
+  cannot be generated.
+- **Nothing added on 2026-08-22 has executed.** The console compiles and its read routes were
+  exercised live during the gateway work, but no screen has been rendered against a running
+  stack; `adjudication`'s migrations `0004` and `0005` have not been applied to any database;
+  no case has run in the ablated mode; and no retry ladder has waited out a real 429. The
+  compose images are wired but not built.
 
 ## Architecture
 
@@ -206,6 +209,14 @@ door for a browser to find
 
 Each pipeline stage appends to an append-only `case_events` log and publishes to Redis, so
 the audit trail regulators inspect and the live step view reviewers watch are the same data.
+
+A transient upstream failure — a 429, a 5xx, a timeout — is retried by the worker with
+backoff, and **each attempt is appended to that log**
+([ADR-0020](docs/decisions/0020-retry-transient-upstream-failures-in-the-worker.md)). The
+retry is in the worker rather than in a client for exactly that reason: a client can wait, but
+only the worker can say so in the record. Before it existed, a rate limit on our side became a
+permanent escalation on a clinician's queue — a fact about our infrastructure delivered as
+though it were a fact about the member.
 
 Every decision that a reader might second-guess is recorded in
 [`docs/decisions`](docs/decisions/).

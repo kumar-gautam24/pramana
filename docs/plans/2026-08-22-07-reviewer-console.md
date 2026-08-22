@@ -1,9 +1,9 @@
 # Pramana Plan 07 — Reviewer Console
 
-> **Written retroactively, 2026-08-22**, alongside the console it describes. Tasks 1–4 are
-> built. Task 5 — the `reviews.outcome` vocabulary — is **not**, and is the one thing plan 04
-> explicitly handed to this plan. It is written here as an open task rather than a completed
-> one.
+> **Written retroactively, 2026-08-22**, alongside the console it describes. Tasks 1–4 were
+> built in that session. Task 5 — the `reviews.outcome` vocabulary, the one thing plan 04
+> explicitly handed to this plan — was written as an open task and **closed later the same
+> day**, along with tasks 6 and 7, which the console had no screens for at all.
 
 **Goal:** The screen a clinician uses. Pick up a case the gate referred to a human, read the
 evidence it assembled, watch it work, and record a determination — which is where an escalation
@@ -153,38 +153,102 @@ current. `npm run lint` is `tsc --noEmit`.
 
 ---
 
-### Task 5: Close `reviews.outcome` — **NOT DONE**
+### Task 5: Close `reviews.outcome` — **DONE**, 2026-08-22
 
-**Files:** a new `services/adjudication/migrations/000N_reviews_outcome_vocabulary.sql`,
+**Files:** `services/adjudication/migrations/0004_reviews_outcome_vocabulary.sql`,
 `services/adjudication/src/adjudication/routers/cases.py`,
-`apps/web/src/components/ReviewForm.tsx`.
+`apps/web/src/components/ReviewForm.tsx`, `apps/web/src/lib/{types,format}.ts`,
+[ADR-0019](../decisions/0019-reviewer-outcome-vocabulary.md).
 
 Plan 04 left `reviews.outcome` deliberately unconstrained and named this plan as the owner,
-with an explicit "must not ship open". It is still open.
+with an explicit "must not ship open". The console proposed `approve` / `deny` /
+`more_information` at the one place a review is authored, which was a constraint in one client
+and not in the schema.
 
-What now exists that did not when that was written: the console proposes a vocabulary at the one
-place a review is authored — `approve`, `deny`, `more_information` — so the column fills with
-known values rather than free text. That is a constraint in one client, not in the schema, and a
-second client would not inherit it.
+- [x] **Settled as a regulatory question**, and the answer moved the console: the vocabulary is
+      `approve` / `deny` / `pend`. `pend` because a clinician who cannot decide from the record
+      must be able to say so — without it they record nothing and the case leaves the flywheel
+      with no `agreed_with_system` row — and named for the disposition rather than for the
+      follow-up. **Partial approval excluded**: a case carries one code, one date and no units,
+      so a partial has nothing here to be partial of, and a partial is legally adverse as to the
+      portion refused, so as a fourth flat value it would make "was an adverse determination
+      issued" unanswerable from this column. ADR-0019 states the reopening condition.
+- [x] Migration `0004` adds the CHECK, maps the console's `more_information` to `pend`, and
+      **stops with the offending values named** if any row holds anything else — those rows are
+      recorded clinician determinations and a migration may not rewrite one.
+- [x] `ReviewIn.outcome` is a `Literal`; the "deliberately unconstrained" paragraph is gone from
+      its docstring and from `repositories/reviews.py`.
+- [x] The console's labels are a `Record<ReviewOutcome, string>`, so a value in the type without
+      a label — or a label for a value the type does not have — fails `tsc`. That is the check
+      the plan asked for; an import across the language boundary was not available.
 
-- [ ] Settle the vocabulary as a regulatory question, not a UI one. The candidates in the
-      literature are approve / deny / partial approval / pend for information; the console's
-      three are a proposal, not an answer.
-- [ ] Migration adding a CHECK constraint, with a data migration for anything already recorded.
-- [ ] `ReviewIn.outcome` becomes a `Literal`, and its docstring's "deliberately unconstrained"
-      paragraph is replaced rather than left contradicting the schema.
-- [ ] The console's `OUTCOMES` constant imports the same set or is checked against it.
+---
 
-**Do not close this by guessing.** Putting values in the schema that no regulator recognises is
-worse than an open column, because the open column is honest about not knowing.
+### Task 6: Intake — **DONE**, 2026-08-22
+
+**Files:** `apps/web/src/app/cases/new/page.tsx`, `src/lib/api.ts`, `src/lib/types.ts`.
+
+Added after this plan was written. The design's request path has
+`web ──/api/cases──► gateway` and the console had no submission call at all, which made it a
+strict subset of the thing that was designed; the original reason ("intake is not a reviewer's
+job") was about who uses the screen, not about whether it exists.
+
+- [x] **Open to any session**, matching the gateway's own gating on the route.
+- [x] **The narrative field carries the measurement**, at the field: a policy search built from
+      the codes alone reached one of the five passages that decide these cases, and the same
+      search with a narrative reached four. Blank still produces a determination, from a worse
+      search, and the form says exactly that. This is the one input whose absence degrades an
+      answer silently instead of failing.
+- [x] **The form mints its own idempotency key**, reused while the contents are unchanged and
+      reminted when any field changes — so a double-click returns the first case, and an edited
+      resubmission is not answered with the previous one's. Hex from `getRandomValues`, not
+      `randomUUID`, which does not exist outside a secure context.
+- [x] **No `run_mode` control.** It exists and the gateway would forward it; a control the
+      console does not offer is one it cannot offer by accident.
+- [x] **The `normalize` stage was struck rather than built** — see the deferral list below and
+      [ADR-0018](../decisions/0018-no-normalize-stage.md). Building intake made this plan the
+      owner plan 04 named.
+
+---
+
+### Task 7: The eval screens — **DONE**, 2026-08-22
+
+**Files:** `apps/web/src/app/evals/page.tsx`, `src/app/evals/runs/[runId]/page.tsx`,
+`src/components/{OperatorOnly,StartRunForm,EvalRunTable,GoldenCases,RunReport,ThresholdSweep}.tsx`.
+
+- [x] **Operator-only, guarded on the page and not only in the nav.** A pasted URL would
+      otherwise render a screen of 403s, which reads as a broken system rather than as the wrong
+      account. The gateway is still the enforcement point.
+- [x] **Every money figure is a count times a named rate.** `evals`' report now publishes the
+      rates it multiplies by, because a total nobody can decompose is a number to be believed
+      rather than checked — and those rates are configuration precisely so a reader who
+      disagrees can change them and re-run.
+- [x] **The sweep is rendered as an argument**: total cost against the threshold with the two
+      component costs beneath it, the minimum marked, and the full table under that. The shape
+      only argues if you can see why it bends. A flat curve says so rather than pretending to
+      recommend a threshold, and names the tie-break the scoring code applies.
+- [x] **A 501 renders as "not built yet"** — calm, never an error and never a zero. It is the
+      harness declining to report a measurement it did not take, which is the behaviour this
+      project wants; a console that rendered it as a failure would undo it. The
+      `model_arithmetic` ablation no longer produces one (ADR-0021), but the contract stands.
+- [x] **A null extraction score renders as "not measured"**, never 0%; unfinished cases are
+      shown as gaps in the measurement rather than as refusals; the golden set's size is
+      rendered against its target of 60.
+- [x] **The chart palette is validated, not chosen.** Two categorical hues plus text ink for the
+      total, checked over all pairs at both surfaces. The console's own green/amber/red is
+      deliberately not reused: those carry outcome and verdict meaning, and red-against-amber is
+      the classic colour-vision failure.
 
 ---
 
 ## Verified
 
-`npx tsc --noEmit` exits 0. `next build` compiles all five routes. The console has **not** been
-run against a live stack, and no screenshot or click-through has been performed — the read
-routes it calls were verified live during plan 05, but the rendering was not.
+`npx tsc --noEmit` exits 0. `next build` compiles all **eight** routes (five at first writing,
+plus intake and the two eval screens). A grep for `http` outside `src/lib/gateway.ts` finds
+nothing. The console has **not** been run against a live stack, and no screenshot or
+click-through has been performed — the read routes it calls were verified live during plan 05,
+but the rendering was not, and the two screens most likely to be wrong for that reason are the
+sweep chart (geometry and label collisions) and the intake form's error paths.
 
 ## Deferred out of this plan, with an owner
 
@@ -192,11 +256,17 @@ routes it calls were verified live during plan 05, but the rendering was not.
   things worth testing are the SSE frame parser (real parsing logic, easy to get subtly wrong)
   and `OutcomeBadge`'s refusal to label an unknown outcome — the one guard whose failure mode is
   a legal problem rather than a cosmetic one. **Owner: whoever next touches `apps/web`.**
-- **Intake has no screen and no `normalize` stage.** The design numbers a first stage turning
-  free text into codes; `cases` has no free-text column beyond `request_text`, which is retrieval
-  input rather than a request. Plan 04 deferred the stage with the instruction that whoever
-  builds intake either adds it or strikes it from the spec. This console is not that owner: it
-  reads cases, it does not submit them.
+- ~~**Intake has no screen and no `normalize` stage.**~~ **Closed 2026-08-22.** The console
+  gained `/cases/new`, open to any session, which made it the owner plan 04 named — and the
+  stage was **struck**, not built ([ADR-0018](../decisions/0018-no-normalize-stage.md)). A
+  request arrives from a billing system that has already assigned the codes; deriving one with a
+  model would place a model-produced fact at the one point in the pipeline nothing downstream
+  re-checks. The narrative field carries the measured retrieval argument at the point of entry,
+  since that is the one input whose absence degrades a determination silently instead of failing.
+- **The console gained the eval screens too** (`/evals`, `/evals/runs/{id}`), operator-only.
+  They were in the design's request-path diagram and were missing for the same reason intake
+  was. Guarded on the page as well as in the nav: a pasted URL would otherwise render a screen
+  of 403s that reads as a broken system rather than as the wrong account.
 - **The console never renders `determination.thresholds`** — the gate's configuration at
   decision time. The audit log's `decision` event does not carry it. If a screen ever needs it,
   that is a route, not a wider event.

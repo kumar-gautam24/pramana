@@ -213,14 +213,21 @@ Update `.workspace/STATE.md`, `JOURNAL.md`, `ERRORS.md` with real counts and any
   unbootable here, and nothing before Task 8 calls a model. **Task 8 owns the guard.**
   Task 9's end-to-end run needs a real model and is blocked until one is installed.
 
-- **`reviews.outcome` is deliberately unconstrained.** Unlike `determinations.outcome`,
-  a clinician's review *can* be a denial — that separation is the whole reason the two
-  tables are distinct. But "can be a denial" is not the same as "can be any string", and
-  the column currently accepts one. The closed set is not written here because the
-  vocabulary a reviewer may record (approve / deny / modify / pend for information) is a
-  regulatory question the console plan answers, and guessing it now would put values in
-  the schema no code has ever produced. **Plan 07 (reviewer console) closes it with a
-  migration**, and must not ship with the column still open.
+- ~~**`reviews.outcome` is deliberately unconstrained.**~~ **Closed 2026-08-22 by plan 07 task
+  5**, migration `0004` and [ADR-0019](../decisions/0019-reviewer-outcome-vocabulary.md). The
+  vocabulary is `approve` / `deny` / `pend`. Of the four candidates named here, `modify`
+  (partial approval) was **excluded**: a case carries one code, one date and no units, so a
+  partial has nothing to be partial of — and a partial is legally adverse as to the portion
+  refused, so as a fourth flat value it would make "was an adverse determination issued"
+  unanswerable from this column. The ADR records what would have to change for it to be added.
+
+- **A transient upstream failure is retried in the worker**, added 2026-08-22 —
+  [ADR-0020](../decisions/0020-retry-transient-upstream-failures-in-the-worker.md). This
+  amends task 4's "no retries in the client layer" rather than contradicting it: the argument
+  there was that a retry hidden in a client triples a case's latency with nothing in the audit
+  trail to say why, and its converse names the worker as the layer that *can* write each
+  attempt into `case_events`. Task 7's short-circuit table now applies to permanent failures
+  only; `UpstreamUnavailable` carries `transient`, and the pipeline re-raises those.
 
 ---
 
