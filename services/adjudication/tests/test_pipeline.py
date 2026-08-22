@@ -261,14 +261,18 @@ async def test_thresholds_payload_carries_a_non_default_threshold(db_pool):
     assert determination.thresholds == {"min_confidence": 0.7}
 
 
-async def test_re_adjudication_does_not_raise_a_unique_violation(db_pool):
-    """Finding 1: Task 8's Redis stream is at-least-once, so a second `adjudicate`
-    call for the same case is an ordinary event, not a rare one -- and used to crash
-    with `UniqueViolationError` on `uq_criteria_case_set_ordinal`, leaving the case
-    stuck `running` forever. The fix (delete-then-insert for the case, inside one
-    transaction with the insert loop) is what this test proves: a second run succeeds,
-    produces its own determination, and leaves exactly one run's worth of `criteria`
-    and `criterion_results` rows behind -- not the first run's orphaned alongside it."""
+async def test_redelivery_returns_the_committed_determination_without_re_deriving(db_pool):
+    """Task 8's Redis stream is at-least-once, so a second `adjudicate` call for the same
+    case is an ordinary event, not a rare one. It must return the determination the case
+    already reached rather than derive a second one.
+
+    This replaces `test_re_adjudication_does_not_raise_a_unique_violation`, which asserted
+    the opposite (`first.id != second.id`) and so codified the defect measured on
+    2026-08-22: because `criteria.insert_many` delete-then-inserts, a second run erases the
+    criteria rows the first determination cites in `blocking`. That test could not see it
+    for a reason worth naming -- it drove an *approval*, whose `blocking` is empty, and then
+    only counted rows. The counts are identical either way; what changes is which ids exist.
+    The sibling test below is the one that looks at the ids."""
     case = await _insert_case(db_pool)
     policy_client = StubPolicyClient(hits=HITS)
     member_client = StubMemberClient(sleep_studies=[_study(ahi=20.0)])
@@ -278,10 +282,13 @@ async def test_re_adjudication_does_not_raise_a_unique_violation(db_pool):
     second = await adjudicate(case.id, db_pool, policy_client, member_client, llm, GateThresholds())
 
     assert first.outcome is Outcome.APPROVE
-    assert second.outcome is Outcome.APPROVE
-    # Two distinct determination rows -- a case may be adjudicated more than once, and
-    # the superseded row survives (determinations' own schema comment).
-    assert first.id != second.id
+    # The same row, not a second one: one case, one determination.
+    assert second.id == first.id
+
+    determination_rows = await db_pool.fetch(
+        "SELECT id FROM determinations WHERE case_id = $1", case.id
+    )
+    assert len(determination_rows) == 1
 
     criteria_rows = await db_pool.fetch("SELECT id FROM criteria WHERE case_id = $1", case.id)
     assert len(criteria_rows) == CRITERION_COUNT
@@ -295,6 +302,42 @@ async def test_re_adjudication_does_not_raise_a_unique_violation(db_pool):
 
     stored = await cases_repo.get(db_pool, case.id)
     assert stored.status == "decided"
+
+
+async def test_redelivery_leaves_an_escalations_blocking_criteria_resolvable(db_pool):
+    """The invariant the guard actually protects: every criterion id a determination names
+    in `blocking` must still resolve to a criteria row.
+
+    Driven through an escalation, because `blocking` holds criterion ids only when the case
+    reached the gate with something unmet -- an approval's `blocking` is empty and could not
+    detect this at all. Re-derivation inserts fresh rows from the sequence, so the cited ids
+    are gone even when the extractor returns byte-identical criteria; a varying extractor
+    (measured: same member, identical `hit_chunk_ids`, four different shapes across
+    attempts) only widens a hole that is already open. Measured shape on 2026-08-22: case
+    e764c531 escalated citing criteria 138 and 139, was re-derived, and both resolved to
+    zero rows."""
+    case = await _insert_case(db_pool)
+    policy_client = StubPolicyClient(hits=HITS)
+    member_client = StubMemberClient(sleep_studies=[_study(ahi=9.0)])
+    llm = StubLLM(RAW_RESPONSE)
+
+    determination = await adjudicate(
+        case.id, db_pool, policy_client, member_client, llm, GateThresholds()
+    )
+    assert determination.outcome is Outcome.ESCALATE
+    assert determination.blocking, "an escalation at the gate must name what blocked it"
+
+    await adjudicate(case.id, db_pool, policy_client, member_client, llm, GateThresholds())
+
+    surviving = await db_pool.fetch(
+        "SELECT id::text AS id FROM criteria WHERE case_id = $1 AND id::text = ANY($2::text[])",
+        case.id,
+        determination.blocking,
+    )
+    assert len(surviving) == len(determination.blocking), (
+        f"determination {determination.id} cites {determination.blocking}; "
+        f"only {[r['id'] for r in surviving]} still exist"
+    )
 
 
 async def test_near_miss_escalates_naming_blocking_criterion(db_pool):

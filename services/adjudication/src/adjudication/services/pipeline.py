@@ -115,6 +115,7 @@ sibling's failure means the case will not use it to reach the gate (finding 6).
 """
 
 import dataclasses
+import logging
 
 import asyncpg
 from pramana_common.criteria import CriterionResult, GateReason, Outcome
@@ -134,6 +135,8 @@ from adjudication.services.member_client import CoverageStatus, MemberClient
 from adjudication.services.policy_client import PolicyClient
 from adjudication.services.upstream import UpstreamUnavailable
 from adjudication.services.verify import Verification, verify_all
+
+logger = logging.getLogger(__name__)
 
 #: Retrieval width for the policy search that opens the `policy` stage. Twice what
 #: NCD 240.4's worked example needs (chunks 56-59, four chunks -- see
@@ -300,6 +303,33 @@ async def adjudicate(
     case = await cases_repo.get(pool, case_id)
     if case is None:
         raise LookupError(f"no case {case_id!r} to adjudicate")
+
+    # A case that has already reached a determination is finished, and re-deriving it is
+    # not merely wasteful -- it is destructive. `criteria.insert_many` deletes the case's
+    # previous criteria before inserting the fresh set, so a second run erases the very
+    # rows the committed determination cites in `blocking`, leaving a reviewer a
+    # determination whose blocking criteria cannot be resolved to any text. Measured on
+    # 2026-08-22: case e764c531 escalated citing criteria 138 and 139, a redelivery
+    # re-derived it, and both ids resolved to zero rows.
+    #
+    # The guard belongs here rather than in `worker.py` because the queue's contract is
+    # at-least-once (see `worker._read_one`: this consumer's pending entries are re-read
+    # before any new one), so redelivery is expected rather than exceptional -- and
+    # `repositories.criteria`'s delete-then-insert was chosen precisely to make a second
+    # `adjudicate(case_id)` well-defined. It is well-defined only while no determination
+    # exists yet; after one does, "well-defined" and "non-destructive" stop agreeing. The
+    # retry ladder is unaffected: a transient upstream failure re-raises from
+    # `_upstream_stopped` *before* any determination is written, so a retried case still
+    # finds none here and runs in full.
+    async with pool.acquire() as conn:
+        decided = await determinations_repo.latest(conn, case_id)
+    if decided is not None:
+        logger.info(
+            "case %s already determined (%s); skipping re-adjudication",
+            case_id,
+            decided.outcome.value,
+        )
+        return decided
 
     await cases_repo.update_status(pool, case_id, "running")
     # `run_mode` is on the very first event, not inferred from the tools further down: the

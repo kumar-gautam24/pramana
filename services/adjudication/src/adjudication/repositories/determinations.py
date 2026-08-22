@@ -66,3 +66,17 @@ async def insert(
         winning_set,
     )
     return _row_to_determination(row)
+
+
+async def latest(conn, case_id: str) -> Determination | None:
+    """The determination this case already reached, or `None` if it has not reached one.
+
+    Ordered by `id` rather than `created_at` because two determinations written inside the
+    same clock tick must still have a defined "later" -- and a case that has more than one
+    row here is precisely the corruption `pipeline.adjudicate`'s re-entry guard exists to
+    stop, so this function has to stay well-defined while that is still possible."""
+    row = await conn.fetchrow(
+        f"SELECT {_COLUMNS} FROM determinations WHERE case_id = $1 ORDER BY id DESC LIMIT 1",
+        case_id,
+    )
+    return _row_to_determination(row) if row is not None else None
